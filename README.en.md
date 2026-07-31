@@ -1,6 +1,24 @@
 # DSCodex
 
-![DSCodex](assets/dscodex-banner.png)
+<div align="center">
+
+<img src="assets/dscodex-banner.png" alt="DSCodex — DeepSeek V4 Flash for Codex" />
+
+<p>
+  <a href="https://github.com/fish2lab/DSCodex/releases/latest"><img src="https://img.shields.io/github/v/release/fish2lab/DSCodex?style=flat-square&color=4D6BFE" alt="Latest release" /></a>
+  <a href="https://github.com/fish2lab/DSCodex/stargazers"><img src="https://img.shields.io/github/stars/fish2lab/DSCodex?style=flat-square&color=F5A623" alt="GitHub stars" /></a>
+  <a href="https://developers.openai.com/codex/"><img src="https://img.shields.io/badge/Codex-App_%C2%B7_CLI_%C2%B7_IDE-412991?style=flat-square&logo=openai&logoColor=white" alt="Codex App, CLI and IDE" /></a>
+  <a href="https://api-docs.deepseek.com/zh-cn/guides/responses_api/"><img src="https://img.shields.io/badge/DeepSeek-V4_Flash-4D6BFE?style=flat-square" alt="DeepSeek V4 Flash" /></a>
+  <br />
+  <a href="https://api-docs.deepseek.com/zh-cn/guides/responses_api/"><img src="https://img.shields.io/badge/Responses_API-native-00A98F?style=flat-square" alt="Native Responses API" /></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/Node.js-%E2%89%A520-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js 20 or newer" /></a>
+  <a href="#requirements"><img src="https://img.shields.io/badge/macOS_%7C_Linux-supported-000000?style=flat-square&logo=apple&logoColor=white" alt="macOS and Linux supported" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-F1C40F?style=flat-square" alt="MIT license" /></a>
+</p>
+
+<p><strong>DeepSeek V4 Flash for the stock ChatGPT desktop app, Codex CLI and IDE — native Responses API, full agentic tool loops, no fork.</strong></p>
+
+</div>
 
 [简体中文](README.md) · English
 
@@ -102,6 +120,16 @@ CLI note: `-m deepseek/deepseek-v4-flash` without the override may show `High`; 
 - The bridge covers default-picker changes, live-task switches, Fast restoration, and persistence
   across app restarts; `model/list` shows `🐳 V4 Flash`, default `max`, supported `["high","max"]`,
   with native GPT entries preserved.
+
+## Compatibility at a glance
+
+| Surface or behavior | Status |
+| --- | --- |
+| Native model picker in the ChatGPT macOS app | Supported |
+| Codex CLI / IDE extension | Supported |
+| Multi-round DeepSeek tool calling | Supported through the native Responses API |
+| GPT / Codex OAuth models | Supported through unchanged passthrough |
+| chatgpt.com web app | Not supported; DSCodex integrates with the local Codex runtime |
 
 ## Known behaviors and edge cases
 

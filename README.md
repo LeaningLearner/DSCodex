@@ -1,6 +1,25 @@
 # DSCodex
 
-![DSCodex](assets/dscodex-banner.png)
+<div align="center">
+
+<img src="assets/dscodex-banner.png" alt="DSCodex — DeepSeek V4 Flash for Codex" />
+
+<p>
+  <a href="https://github.com/fish2lab/DSCodex/releases/latest"><img src="https://img.shields.io/github/v/release/fish2lab/DSCodex?style=flat-square&color=4D6BFE" alt="Latest release" /></a>
+  <a href="https://github.com/fish2lab/DSCodex/stargazers"><img src="https://img.shields.io/github/stars/fish2lab/DSCodex?style=flat-square&color=F5A623" alt="GitHub stars" /></a>
+  <a href="https://developers.openai.com/codex/"><img src="https://img.shields.io/badge/Codex-App_%C2%B7_CLI_%C2%B7_IDE-412991?style=flat-square&logo=openai&logoColor=white" alt="Codex App, CLI and IDE" /></a>
+  <a href="https://api-docs.deepseek.com/zh-cn/guides/responses_api/"><img src="https://img.shields.io/badge/DeepSeek-V4_Flash-4D6BFE?style=flat-square" alt="DeepSeek V4 Flash" /></a>
+  <br />
+  <a href="https://api-docs.deepseek.com/zh-cn/guides/responses_api/"><img src="https://img.shields.io/badge/Responses_API-native-00A98F?style=flat-square" alt="Native Responses API" /></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/Node.js-%E2%89%A520-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js 20 or newer" /></a>
+  <a href="#环境要求"><img src="https://img.shields.io/badge/macOS_%7C_Linux-supported-000000?style=flat-square&logo=apple&logoColor=white" alt="macOS and Linux supported" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-F1C40F?style=flat-square" alt="MIT license" /></a>
+</p>
+
+<p><strong>DeepSeek V4 Flash for the stock ChatGPT desktop app, Codex CLI and IDE — native Responses API, full agentic tool loops, no fork.</strong></p>
+<p>在原版 ChatGPT 桌面端与 Codex 中使用 DeepSeek V4 Flash，同时保留 GPT OAuth 模型。</p>
+
+</div>
 
 简体中文 · [English](README.en.md)
 
@@ -76,6 +95,16 @@ CLI 注意：`-m deepseek/deepseek-v4-flash` 不带覆盖参数时可能显示 `
 
 - 真实 DeepSeek 工具循环与 GPT OAuth 旁路均端到端实测通过（`DSCODEX_TOOL_OK`、`DSCODEX_GPT_OAUTH_OK`）。
 - bridge 覆盖默认 picker、已有任务切换、Fast 恢复与重启后的状态持久化；`model/list` 返回 `🐳 V4 Flash`、默认 `max`、可选 `["high","max"]`，原生 GPT 条目保留。
+
+## 兼容性速查
+
+| 场景 | 状态 |
+| --- | --- |
+| ChatGPT macOS 桌面端原生模型菜单 | 支持 |
+| Codex CLI / IDE 扩展 | 支持 |
+| DeepSeek 多轮工具调用 | 支持，走原生 Responses API |
+| GPT / Codex OAuth 模型 | 支持，流量原样旁路 |
+| chatgpt.com 网页版 | 不支持；DSCodex 接入的是本地 Codex 运行时 |
 
 ## 已知行为与边界
 
