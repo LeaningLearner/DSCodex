@@ -122,4 +122,6 @@ export function uninstall({ paths }) {
     atomicWrite(paths.config, stripped.endsWith("\n") ? stripped : `${stripped}\n`);
   }
   if (existsSync(paths.catalog)) unlinkSync(paths.catalog);
+  if (existsSync(paths.selectionState)) unlinkSync(paths.selectionState);
+  if (existsSync(paths.bridgeShim)) unlinkSync(paths.bridgeShim);
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -54,9 +54,14 @@ test("install and uninstall touch only DSCodex-owned files and lines", () => {
   assert.equal(existsSync(paths.backup), true);
   assert.equal(existsSync(paths.catalog), true);
   assert.match(readFileSync(paths.config, "utf8"), /DSCodex managed/);
+  mkdirSync(paths.stateDir, { recursive: true });
+  writeFileSync(paths.selectionState, "{}\n");
+  writeFileSync(paths.bridgeShim, "#!/bin/sh\n");
 
   uninstall({ paths });
   assert.equal(existsSync(paths.catalog), false);
+  assert.equal(existsSync(paths.selectionState), false);
+  assert.equal(existsSync(paths.bridgeShim), false);
   assert.equal(readFileSync(paths.config, "utf8"), original);
   assert.equal(readFileSync(paths.backup, "utf8"), original);
 });

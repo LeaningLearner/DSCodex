@@ -9,11 +9,92 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildCatalog, syncCatalog } from "./catalog.mjs";
 import { install, uninstall } from "./config.mjs";
 import { createProxyServer } from "./proxy.mjs";
 import { DEFAULT_PORT, HOST, VERSION, pathsFor, resolveCodexHome } from "./constants.mjs";
+
+const APP_SERVER_WRAPPER = fileURLToPath(new URL("./codex-wrapper.mjs", import.meta.url));
+
+function launchctlGet(name) {
+  if (process.platform !== "darwin") return process.env[name]?.trim() ?? "";
+  try {
+    return execFileSync("/bin/launchctl", ["getenv", name], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function stockCodexPath() {
+  const candidates = [
+    launchctlGet("DSCODEX_REAL_CODEX"),
+    process.env.DSCODEX_REAL_CODEX?.trim(),
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+  ];
+  try {
+    candidates.push(execFileSync("/usr/bin/which", ["codex"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim());
+  } catch {
+    // The bundled ChatGPT path above is the normal macOS install.
+  }
+  return candidates.find((candidate) => candidate && candidate !== APP_SERVER_WRAPPER && existsSync(candidate)) ?? "";
+}
+
+function nodePath() {
+  // Prefer the PATH-resolved `node` (a stable Homebrew symlink); process.execPath
+  // resolves to the versioned Cellar binary, which disappears on the next upgrade.
+  try {
+    const resolved = execFileSync("/usr/bin/which", ["node"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (resolved && existsSync(resolved)) return resolved;
+  } catch {
+    // Fall back to the current interpreter below.
+  }
+  return process.execPath;
+}
+
+function writeBridgeShim(path) {
+  // GUI apps get a bare launchd PATH (/usr/bin:/bin:...), so a `#!/usr/bin/env node`
+  // shebang fails there. Point CODEX_CLI_PATH at a shim with absolute paths instead.
+  const content = `#!/bin/sh\nexec ${JSON.stringify(nodePath())} ${JSON.stringify(APP_SERVER_WRAPPER)} "$@"\n`;
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(path, content, { mode: 0o755 });
+}
+
+function bridgePlan(paths) {
+  if (process.platform !== "darwin") return null;
+  const existing = launchctlGet("CODEX_CLI_PATH");
+  if (existing && existing !== paths.bridgeShim && existing !== APP_SERVER_WRAPPER) {
+    throw new Error(`Refusing to replace user-owned CODEX_CLI_PATH: ${existing}`);
+  }
+  const realCodex = stockCodexPath();
+  if (!realCodex) throw new Error("Could not locate the stock Codex binary for the app-server bridge");
+  return { realCodex, shim: paths.bridgeShim };
+}
+
+function activateBridge(plan) {
+  if (!plan) return;
+  writeBridgeShim(plan.shim);
+  execFileSync("/bin/launchctl", ["setenv", "DSCODEX_REAL_CODEX", plan.realCodex]);
+  execFileSync("/bin/launchctl", ["setenv", "CODEX_CLI_PATH", plan.shim]);
+}
+
+function deactivateBridge(paths) {
+  if (process.platform !== "darwin") return;
+  const current = launchctlGet("CODEX_CLI_PATH");
+  if (current !== paths.bridgeShim && current !== APP_SERVER_WRAPPER) return;
+  execFileSync("/bin/launchctl", ["unsetenv", "CODEX_CLI_PATH"]);
+  execFileSync("/bin/launchctl", ["unsetenv", "DSCODEX_REAL_CODEX"]);
+}
 
 function parsePort(args, env = process.env) {
   const index = args.indexOf("--port");
@@ -144,6 +225,9 @@ async function doctor(port) {
     catalog_present: existsSync(paths.catalog),
     proxy_running: Boolean(ready),
     deepseek_key_in_proxy: Boolean(ready?.deepseek_key),
+    app_server_bridge: process.platform !== "darwin" || (
+      launchctlGet("CODEX_CLI_PATH") === paths.bridgeShim && Boolean(launchctlGet("DSCODEX_REAL_CODEX"))
+    ),
   };
   for (const [name, ok] of Object.entries(checks)) console.log(`${ok ? "ok" : "missing"}  ${name}`);
   if (Object.values(checks).some((ok) => !ok)) process.exitCode = 1;
@@ -159,7 +243,7 @@ Usage: dscodex <command> [--port ${DEFAULT_PORT}]
   start       run the loopback router in the background
   serve       run the loopback router in the foreground
   status      show router state
-  doctor      verify catalog, routing, and DeepSeek key state
+  doctor      verify catalog, routing, key, and app-server bridge state
   stop        stop the background router
   uninstall   remove only DSCodex-owned Codex configuration
 
@@ -172,9 +256,12 @@ async function main() {
   const { paths } = runtime();
   switch (command) {
     case "install": {
+      const plan = bridgePlan(paths);
       const result = install({ paths, port });
+      activateBridge(plan);
       console.log(`Installed ${result.catalog.models[0].display_name} with default Max reasoning`);
-      console.log(`Restart Codex after starting DSCodex on ${HOST}:${port}`);
+      console.log("Installed provider-specific effort and speed memory for the ChatGPT app");
+      console.log(`Fully quit and restart Codex after starting DSCodex on ${HOST}:${port}`);
       break;
     }
     case "sync": {
@@ -190,7 +277,8 @@ async function main() {
     case "uninstall":
       await stop();
       uninstall({ paths });
-      console.log("Removed DSCodex-owned config and catalog; backup retained if one was created");
+      deactivateBridge(paths);
+      console.log("Removed DSCodex-owned config, catalog, selection state, and app-server bridge");
       break;
     case "--version":
     case "version": console.log(VERSION); break;

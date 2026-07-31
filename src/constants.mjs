@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 export const DEFAULT_PORT = 10110;
 export const HOST = "127.0.0.1";
 export const DEEPSEEK_PICKER_SLUG = "deepseek/deepseek-v4-flash";
@@ -21,6 +21,8 @@ export function pathsFor(codexHome) {
     catalog: join(codexHome, "dscodex-models.json"),
     backup: join(codexHome, "config.toml.pre-dscodex.bak"),
     stateDir: join(codexHome, "dscodex"),
+    selectionState: join(codexHome, "dscodex", "model-selections.json"),
+    bridgeShim: join(codexHome, "dscodex", "codex-cli-bridge.sh"),
     pid: join(codexHome, "dscodex", "server.pid"),
     log: join(codexHome, "dscodex", "server.log"),
   };

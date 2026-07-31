@@ -1,6 +1,6 @@
 {
   "name": "dscodex",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Minimal DeepSeek V4 Flash Responses API integration for Codex",
@@ -10,6 +10,7 @@
   "scripts": {
     "test": "node --test",
     "smoke:picker": "node ./scripts/picker-smoke.mjs",
+    "smoke:state": "node ./scripts/state-smoke.mjs",
     "start": "node ./src/cli.mjs start",
     "serve": "node ./src/cli.mjs serve",
     "doctor": "node ./src/cli.mjs doctor"
