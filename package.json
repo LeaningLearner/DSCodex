@@ -1,0 +1,21 @@
+{
+  "name": "dscodex",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal DeepSeek V4 Flash Responses API integration for Codex",
+  "bin": {
+    "dscodex": "./src/cli.mjs"
+  },
+  "scripts": {
+    "test": "node --test",
+    "smoke:picker": "node ./scripts/picker-smoke.mjs",
+    "start": "node ./src/cli.mjs start",
+    "serve": "node ./src/cli.mjs serve",
+    "doctor": "node ./src/cli.mjs doctor"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
