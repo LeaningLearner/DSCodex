@@ -9,13 +9,24 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { buildCatalog, syncCatalog } from "./catalog.mjs";
 import { install, uninstall } from "./config.mjs";
 import { deleteStoredKey, readStoredKey, writeStoredKey } from "./keys.mjs";
 import { createProxyServer } from "./proxy.mjs";
+import {
+  LAUNCHD_LABEL,
+  SYSTEMD_UNIT,
+  WINDOWS_TASK,
+  autostartKind,
+  buildLaunchdPlist,
+  buildSystemdUnit,
+  buildWindowsVbs,
+  launchdPlistPath,
+  systemdUnitPath,
+} from "./autostart.mjs";
 import { DEFAULT_PORT, HOST, VERSION, pathsFor, resolveCodexHome } from "./constants.mjs";
 
 const APP_SERVER_WRAPPER = fileURLToPath(new URL("./codex-wrapper.mjs", import.meta.url));
@@ -186,13 +197,40 @@ async function serve(port) {
   syncIfPossible(paths);
   const deepSeekKey = resolveDeepSeekKey(process.env, paths.keyFile);
   const server = createProxyServer({ deepSeekKey, models: loadModels(paths) });
+  // The serve process owns the pid file so `stop` works no matter who launched
+  // it — `start`, launchd, systemd, or the Windows Task Scheduler.
+  mkdirSync(paths.stateDir, { recursive: true, mode: 0o700 });
+  writeFileSync(paths.pid, `${JSON.stringify({ pid: process.pid, port })}\n`, { mode: 0o600 });
+  const shutdown = () => server.close(() => {
+    try {
+      unlinkSync(paths.pid);
+    } catch {
+      // Already removed by `stop`.
+    }
+    process.exit(0);
+  });
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
   server.listen(port, HOST, () => {
     console.log(`DSCodex ${VERSION} listening at http://${HOST}:${port}/v1`);
     console.log(`DeepSeek key: ${deepSeekKey ? "configured" : "missing (GPT OAuth passthrough still works)"}`);
   });
-  const shutdown = () => server.close(() => process.exit(0));
-  process.once("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
+}
+
+function stopInstance(paths) {
+  if (!existsSync(paths.pid)) return "none";
+  const state = JSON.parse(readFileSync(paths.pid, "utf8"));
+  try {
+    process.kill(state.pid, "SIGTERM");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+    if (existsSync(paths.pid)) unlinkSync(paths.pid);
+    return "stale";
+  }
+  // The graceful shutdown (exit 0) is exactly what launchd KeepAlive
+  // (SuccessfulExit=false) and systemd Restart=on-failure leave alone.
+  if (existsSync(paths.pid)) unlinkSync(paths.pid);
+  return "stopped";
 }
 
 async function start(port) {
@@ -214,7 +252,6 @@ async function start(port) {
   });
   child.unref();
   closeSync(logFd);
-  writeFileSync(paths.pid, `${JSON.stringify({ pid: child.pid, port })}\n`, { mode: 0o600 });
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 100));
     const ready = await health(port);
@@ -229,19 +266,144 @@ async function start(port) {
 
 async function stop() {
   const { paths } = runtime();
-  if (!existsSync(paths.pid)) {
-    console.log("DSCodex is not running (no pid file)");
-    return;
+  const result = stopInstance(paths);
+  if (result === "none") console.log("DSCodex is not running (no pid file)");
+  else if (result === "stale") console.log("Removed stale DSCodex pid file");
+  else console.log("Stopped DSCodex");
+}
+
+function autostartFile(paths) {
+  const kind = autostartKind();
+  if (kind === "launchd") return launchdPlistPath();
+  if (kind === "systemd") return systemdUnitPath();
+  return join(paths.stateDir, "autostart-run.vbs");
+}
+
+function autostartEnabled(paths) {
+  if (autostartKind() === "schtasks") {
+    try {
+      execFileSync("schtasks", ["/query", "/tn", WINDOWS_TASK], { stdio: ["ignore", "ignore", "ignore"] });
+      return true;
+    } catch {
+      return false;
+    }
   }
-  const state = JSON.parse(readFileSync(paths.pid, "utf8"));
-  try {
-    process.kill(state.pid, "SIGTERM");
-    console.log(`Stopped DSCodex pid ${state.pid}`);
-  } catch (error) {
-    if (error?.code !== "ESRCH") throw error;
-    console.log("Removed stale DSCodex pid file");
+  return existsSync(autostartFile(paths));
+}
+
+// The generated plist/unit/VBS never embeds the DeepSeek key: the router resolves
+// it from the stored key file at runtime.
+async function autostartEnable(paths, port) {
+  const kind = autostartKind();
+  const file = autostartFile(paths);
+  const cliPath = fileURLToPath(import.meta.url);
+  mkdirSync(paths.stateDir, { recursive: true, mode: 0o700 });
+
+  // Free the port so the manager-launched instance can bind immediately.
+  if (await health(port)) {
+    stopInstance(paths);
+    for (let attempt = 0; attempt < 30 && (await health(port)); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
   }
-  unlinkSync(paths.pid);
+
+  if (kind === "launchd") {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, buildLaunchdPlist({ nodePath: nodePath(), cliPath, port, logPath: paths.log }), { mode: 0o600 });
+    const uid = process.getuid();
+    try {
+      execFileSync("/bin/launchctl", ["bootout", `gui/${uid}/${LAUNCHD_LABEL}`], { stdio: ["ignore", "ignore", "ignore"] });
+    } catch {
+      // Not loaded yet.
+    }
+    execFileSync("/bin/launchctl", ["bootstrap", `gui/${uid}`, file], { stdio: ["ignore", "ignore", "pipe"] });
+  } else if (kind === "schtasks") {
+    writeFileSync(file, buildWindowsVbs({ nodePath: nodePath(), cliPath, port, logPath: paths.log }), { mode: 0o600 });
+    const wscript = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "wscript.exe");
+    execFileSync("schtasks", ["/create", "/tn", WINDOWS_TASK, "/sc", "onlogon", "/rl", "limited", "/f", "/tr", `"${wscript}" "${file}"`], { stdio: ["ignore", "ignore", "pipe"] });
+    // Take effect now, not only at the next logon.
+    execFileSync("schtasks", ["/run", "/tn", WINDOWS_TASK], { stdio: ["ignore", "ignore", "pipe"] });
+  } else {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, buildSystemdUnit({ nodePath: nodePath(), cliPath, port, logPath: paths.log }), { mode: 0o600 });
+    try {
+      execFileSync("systemctl", ["--user", "daemon-reload"], { stdio: ["ignore", "ignore", "pipe"] });
+      execFileSync("systemctl", ["--user", "enable", "--now", SYSTEMD_UNIT], { stdio: ["ignore", "ignore", "pipe"] });
+    } catch (error) {
+      throw new Error(`systemd user service unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const ready = await health(port);
+    if (ready) {
+      console.log(`DSCodex autostart enabled (${kind}); router running on ${HOST}:${port}`);
+      console.log(`DeepSeek key: ${ready.deepseek_key ? "configured" : "missing (resolves from the stored key at runtime)"}`);
+      return;
+    }
+  }
+  throw new Error(`Autostart is installed but the router did not become ready; inspect ${paths.log}`);
+}
+
+function autostartDisable(paths, { quiet = false } = {}) {
+  const kind = autostartKind();
+  const file = autostartFile(paths);
+  let removed = false;
+  if (kind === "launchd") {
+    try {
+      execFileSync("/bin/launchctl", ["bootout", `gui/${process.getuid()}/${LAUNCHD_LABEL}`], { stdio: ["ignore", "ignore", "ignore"] });
+      removed = true;
+    } catch {
+      // Not loaded.
+    }
+  } else if (kind === "schtasks") {
+    try {
+      execFileSync("schtasks", ["/delete", "/tn", WINDOWS_TASK, "/f"], { stdio: ["ignore", "ignore", "ignore"] });
+      removed = true;
+    } catch {
+      // Task absent.
+    }
+  } else {
+    try {
+      execFileSync("systemctl", ["--user", "disable", "--now", SYSTEMD_UNIT], { stdio: ["ignore", "ignore", "ignore"] });
+      removed = true;
+    } catch {
+      // Unit absent or systemd unavailable.
+    }
+    try {
+      execFileSync("systemctl", ["--user", "daemon-reload"], { stdio: ["ignore", "ignore", "ignore"] });
+    } catch {
+      // Best effort.
+    }
+  }
+  if (existsSync(file)) {
+    unlinkSync(file);
+    removed = true;
+  }
+  if (quiet) return;
+  if (removed) {
+    console.log(`DSCodex autostart disabled (${kind}); the managed router was stopped`);
+    console.log("Run `node src/cli.mjs start` to run the router manually");
+  } else {
+    console.log("DSCodex autostart is not enabled");
+  }
+}
+
+async function autostartStatus(paths, port) {
+  const kind = autostartKind();
+  const enabled = autostartEnabled(paths);
+  const ready = await health(port);
+  console.log(`autostart: ${enabled ? `enabled (${kind}, port in config: see ${autostartFile(paths)})` : "not enabled"}`);
+  console.log(`router: ${ready ? `running (${HOST}:${port})` : "stopped"}`);
+  if (!enabled) process.exitCode = 1;
+}
+
+async function manageAutostart(subcommand, paths, port) {
+  if (subcommand === "enable") return autostartEnable(paths, port);
+  if (subcommand === "disable") return autostartDisable(paths);
+  if (subcommand === "status") return autostartStatus(paths, port);
+  throw new Error(`Unknown autostart subcommand: ${subcommand}`);
 }
 
 async function status(port) {
@@ -307,6 +469,7 @@ Usage: dscodex <command> [--port ${DEFAULT_PORT}]
   key delete  remove the stored DeepSeek key
   start       run the loopback router in the background
   serve       run the loopback router in the foreground
+  autostart enable|disable|status  run the router automatically at login
   status      show router state
   doctor      verify catalog, routing, key, and app-server bridge state
   stop        stop the background router
@@ -329,6 +492,7 @@ async function main() {
       console.log(`Installed ${result.catalog.models[0].display_name} with default Max reasoning`);
       console.log("Installed provider-specific effort and speed memory for the ChatGPT app");
       console.log(`Fully quit and restart Codex after starting DSCodex on ${HOST}:${port}`);
+      console.log("Optional: `node src/cli.mjs autostart enable` starts the router at login");
       break;
     }
     case "sync": {
@@ -339,14 +503,16 @@ async function main() {
     case "key": await manageKey(args[0] ?? "status", paths, port); break;
     case "start": await start(port); break;
     case "serve": await serve(port); break;
+    case "autostart": await manageAutostart(args[0] ?? "status", paths, port); break;
     case "status": await status(port); break;
     case "doctor": await doctor(port); break;
     case "stop": await stop(); break;
     case "uninstall":
+      autostartDisable(paths, { quiet: true });
       await stop();
       uninstall({ paths });
       deactivateBridge(paths);
-      console.log("Removed DSCodex-owned config, catalog, selection state, and app-server bridge");
+      console.log("Removed DSCodex-owned config, catalog, selection state, autostart entry, and app-server bridge");
       break;
     case "--version":
     case "version": console.log(VERSION); break;

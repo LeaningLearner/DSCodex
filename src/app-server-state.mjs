@@ -4,6 +4,7 @@ import { DEEPSEEK_PICKER_SLUG, DEEPSEEK_WIRE_MODEL } from "./constants.mjs";
 
 const VERSION = 1;
 const STANDARD_TIER = "default";
+const MAX_TRACKED_THREADS = 500;
 const VALID_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
 
 function providerFor(model) {
@@ -41,6 +42,10 @@ function initialState(configPath) {
       serviceTier: rootString(config, "service_tier") ?? STANDARD_TIER,
     },
     deepseek: { reasoningEffort: "max" },
+    // True when a model-only config write left config.toml's effort line belonging
+    // to the other provider; thread/start must then restore the slot, not adopt it.
+    staleEffort: false,
+    threads: {},
   };
   const normalized = normalizeEffort(activeProvider, effort);
   if (normalized) state[activeProvider].reasoningEffort = normalized;
@@ -64,10 +69,25 @@ function loadState(statePath, configPath) {
       deepseek: {
         reasoningEffort: normalizeEffort("deepseek", value.deepseek?.reasoningEffort) ?? "max",
       },
+      staleEffort: value.staleEffort === true,
+      threads: value.threads && typeof value.threads === "object" ? value.threads : {},
     };
   } catch {
     return initialState(configPath);
   }
+}
+
+function reviveThreads(value) {
+  const entries = Object.entries(value).slice(-MAX_TRACKED_THREADS);
+  const map = new Map();
+  for (const [threadId, entry] of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    map.set(threadId, {
+      activeProvider: entry.activeProvider === "deepseek" ? "deepseek" : "openai",
+      model: typeof entry.model === "string" ? entry.model : null,
+    });
+  }
+  return map;
 }
 
 function atomicWrite(path, content) {
@@ -90,12 +110,22 @@ function tierForThread(value) {
 }
 
 export function createAppServerState({ statePath, configPath }) {
-  const state = loadState(statePath, configPath);
-  const threads = new Map();
+  const { threads: persistedThreads, ...state } = loadState(statePath, configPath);
+  const threads = reviveThreads(persistedThreads);
   const pending = new Map();
 
   function save() {
-    atomicWrite(statePath, `${JSON.stringify(state, null, 2)}\n`);
+    const persisted = {
+      ...state,
+      threads: Object.fromEntries([...threads].slice(-MAX_TRACKED_THREADS)),
+    };
+    atomicWrite(statePath, `${JSON.stringify(persisted, null, 2)}\n`);
+  }
+
+  function trackThread(threadId, value) {
+    threads.delete(threadId);
+    threads.set(threadId, value);
+    if (threads.size > MAX_TRACKED_THREADS) threads.delete(threads.keys().next().value);
   }
 
   function rememberEffort(provider, effort) {
@@ -130,6 +160,8 @@ export function createAppServerState({ statePath, configPath }) {
       const effort = rememberEffort(state.activeProvider, effortEdit.value);
       if (effort) effortEdit.value = effort;
     }
+    // A batch write pushes the corrected effort into config.toml, re-syncing the file.
+    if (modelEdit || effortEdit) state.staleEffort = false;
     if (tierEdit && state.activeProvider === "openai" && typeof tierEdit.value === "string") {
       state.openai.serviceTier = tierEdit.value;
     }
@@ -140,10 +172,18 @@ export function createAppServerState({ statePath, configPath }) {
     if (!params?.keyPath) return;
     const name = keyName(params.keyPath);
     if (name === "model" && typeof params.value === "string") {
+      const previous = state.activeProvider;
       switchDefaults(params.value, null);
+      // A model-only write leaves the other provider's effort line in config.toml;
+      // anything reading that line later must not adopt it. Cleared once an
+      // explicit effort write (or a batch model write) re-syncs the file.
+      if (state.activeProvider !== previous) state.staleEffort = true;
     } else if (name === "model_reasoning_effort") {
       const effort = rememberEffort(state.activeProvider, params.value);
-      if (effort) params.value = effort;
+      if (effort) {
+        params.value = effort;
+        state.staleEffort = false;
+      }
     } else if (name === "service_tier" && state.activeProvider === "openai" && typeof params.value === "string") {
       state.openai.serviceTier = params.value;
     }
@@ -152,9 +192,13 @@ export function createAppServerState({ statePath, configPath }) {
 
   function rewriteThreadSettings(params) {
     if (!params?.threadId) return;
+    // Threads this bridge never saw (started before a restart, another window, a
+    // fork) default to the last active provider, not to the incoming model's
+    // provider — otherwise a cross-provider switch looks like an in-provider
+    // effort change and the carried-over effort (e.g. DeepSeek Max) is adopted.
     const thread = threads.get(params.threadId) ?? {
-      activeProvider: params.model ? providerFor(params.model) : state.activeProvider,
-      model: params.model ?? null,
+      activeProvider: state.activeProvider,
+      model: null,
     };
     const provider = params.model ? providerFor(params.model) : thread.activeProvider;
     if (provider !== thread.activeProvider) {
@@ -169,7 +213,7 @@ export function createAppServerState({ statePath, configPath }) {
     }
     thread.activeProvider = provider;
     if (params.model) thread.model = params.model;
-    threads.set(params.threadId, thread);
+    trackThread(params.threadId, thread);
     save();
   }
 
@@ -179,7 +223,11 @@ export function createAppServerState({ statePath, configPath }) {
     if (!model) return;
     const provider = providerFor(model);
     const incomingEffort = params.config?.model_reasoning_effort;
-    const effort = switchDefaults(model, incomingEffort);
+    // With a stale config effort line, the GUI echoes the other provider's value
+    // on every new session; restore this provider's slot instead of adopting it.
+    const effort = provider === state.activeProvider && state.staleEffort
+      ? state[provider].reasoningEffort
+      : switchDefaults(model, incomingEffort);
     params.config = { ...(params.config ?? {}), model_reasoning_effort: effort };
     params.serviceTier = provider === "openai" ? tierForThread(state.openai.serviceTier) : null;
     pending.set(requestKey(message.id), {
@@ -220,7 +268,7 @@ export function createAppServerState({ statePath, configPath }) {
     const model = result.model ?? tracked.model;
     if (threadId && model) {
       const provider = providerFor(model);
-      threads.set(threadId, { activeProvider: provider, model });
+      trackThread(threadId, { activeProvider: provider, model });
       rememberEffort(provider, result.reasoningEffort);
       if (provider === "openai" && result.serviceTier !== undefined) {
         state.openai.serviceTier = result.serviceTier ?? STANDARD_TIER;

@@ -36,7 +36,9 @@ export function buildDeepSeekCatalogEntry(template) {
   entry.default_verbosity = "low";
   entry.apply_patch_tool_type = "freeform";
   entry.web_search_tool_type = "text";
-  entry.input_modalities = ["text"];
+  // Declaring the image modality opens the desktop view_image gate; the router
+  // rewrites those images into GPT-generated descriptions before DeepSeek sees them.
+  entry.input_modalities = ["text", "image"];
   entry.supports_image_detail_original = false;
   entry.supports_parallel_tool_calls = true;
   entry.supports_search_tool = true;

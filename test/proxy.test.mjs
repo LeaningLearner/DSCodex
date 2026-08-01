@@ -166,6 +166,16 @@ test("forwards native GPT models to ChatGPT Codex with OAuth headers", async (t)
   assert.deepEqual(observed.body, original);
 });
 
+test("keeps pooled loopback connections alive past the Codex client idle timeout", async (t) => {
+  const proxy = createProxyServer({ logger: { info() {}, error() {} } });
+  await listen(proxy);
+  t.after(async () => { await close(proxy); });
+  // The Codex HTTP client pools connections with a ~90s idle timeout; a shorter
+  // server timeout makes the client reuse connections the server just closed.
+  assert.ok(proxy.keepAliveTimeout > 90_000);
+  assert.ok(proxy.headersTimeout > proxy.keepAliveTimeout);
+});
+
 test("returns an explicit error when V4 Flash is selected without a key", async (t) => {
   const proxy = createProxyServer({ deepSeekKey: "", logger: { info() {}, error() {} } });
   const proxyUrl = await listen(proxy);

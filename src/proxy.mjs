@@ -7,6 +7,7 @@ import {
   DEEPSEEK_PICKER_SLUG,
   DEEPSEEK_WIRE_MODEL,
 } from "./constants.mjs";
+import { createVisionDescriber } from "./vision.mjs";
 
 const FORWARDED_REQUEST_HEADERS = new Set([
   "authorization",
@@ -133,7 +134,9 @@ export function createProxyServer({
   chatGptBaseUrl = CHATGPT_CODEX_BASE_URL,
   models = [],
   logger = console,
+  visionModel,
 } = {}) {
+  const vision = createVisionDescriber({ baseUrl: chatGptBaseUrl, model: visionModel, logger });
   const server = http.createServer(async (request, response) => {
     const startedAt = Date.now();
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -160,9 +163,15 @@ export function createProxyServer({
         return;
       }
 
-      const outgoingBody = deepSeek
-        ? Buffer.from(JSON.stringify(buildDeepSeekBody(parsed)))
-        : raw;
+      let outgoingBody = raw;
+      if (deepSeek) {
+        const body = buildDeepSeekBody(parsed);
+        // DeepSeek V4 is text-only: borrow the caller's GPT OAuth to describe any
+        // attached images, then inject the descriptions as plain input_text.
+        const rewritten = await vision.rewriteImages(body, request.headers);
+        if (rewritten) logger.info?.(`vision: described ${rewritten} image(s) for ${url.pathname}`);
+        outgoingBody = Buffer.from(JSON.stringify(body));
+      }
       const baseUrl = deepSeek ? deepSeekBaseUrl : chatGptBaseUrl;
       const target = new URL(`${baseUrl.replace(/\/$/, "")}${upstreamPath(url.pathname)}${url.search}`);
       const headers = copyRequestHeaders(request, deepSeek ? deepSeekKey : undefined);
@@ -171,11 +180,18 @@ export function createProxyServer({
       }
       headers.set("content-length", String(outgoingBody.length));
 
+      const controller = new AbortController();
+      // A client that goes away mid-stream (cancel, retry after a disconnect) must
+      // not leave the upstream request running.
+      response.on("close", () => {
+        if (!response.writableFinished) controller.abort();
+      });
       const upstream = await fetch(target, {
         method: "POST",
         headers,
         body: outgoingBody,
         redirect: "manual",
+        signal: controller.signal,
       });
       response.statusCode = upstream.status;
       response.statusMessage = upstream.statusText;
@@ -185,16 +201,30 @@ export function createProxyServer({
         response.end();
         return;
       }
-      Readable.fromWeb(upstream.body).pipe(response);
+      const stream = Readable.fromWeb(upstream.body);
+      stream.on("error", (error) => {
+        // Otherwise invisible: the client only sees a truncated SSE stream and
+        // retries with "stream disconnected before completion".
+        logger.error?.(`upstream stream ended early: ${error instanceof Error ? error.message : String(error)}`);
+        response.destroy(error instanceof Error ? error : undefined);
+      });
+      stream.pipe(response);
     } catch (error) {
       logger.error?.(`proxy error: ${error instanceof Error ? error.message : String(error)}`);
-      if (!response.headersSent) {
+      if (!response.headersSent && !response.destroyed) {
         json(response, 502, { error: { message: "DSCodex upstream request failed" } });
       } else {
         response.destroy(error instanceof Error ? error : undefined);
       }
     }
   });
+  // Node's default 5s keepAliveTimeout is far shorter than the ~90s idle timeout
+  // of the Codex HTTP client's connection pool, so pooled loopback connections
+  // were reused after the server had closed them — surfacing as
+  // "stream disconnected before completion: error sending request" retries.
+  // headersTimeout must stay above keepAliveTimeout.
+  server.keepAliveTimeout = 120_000;
+  server.headersTimeout = 125_000;
   server.on("upgrade", (_request, socket) => {
     socket.end("HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\n\r\n");
   });

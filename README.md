@@ -32,7 +32,8 @@ DSCodex 是一个约 40 KB、零依赖的 Node 本地路由，把 DeepSeek V4 Fl
 ```
 
 - **原生环境用不了 DeepSeek。** Codex 的所有请求只走全局 `openai_base_url`，指到 DeepSeek 就废掉 GPT 模型；Chat Completions 式的转换接入又会丢工具循环。DSCodex 按模型名分流：V4 Flash 走 DeepSeek **原生 Responses API**（SSE），其余请求原样转发给 ChatGPT 后端。shell、`apply_patch`、function call、web search 全套工具照常可用。
-- **切模型互相覆盖思考档位。** 桌面端切模型会把当前 effort 写进全局配置，OpenAI High 和 DeepSeek Max 互相覆盖。DSCodex 为两个 provider 各维护一个独立槽位——切回 GPT 时自动恢复它原来的档位和速度。
+- **切模型互相覆盖思考档位。** 桌面端切模型会把当前 effort 写进全局配置，OpenAI High 和 DeepSeek Max 互相覆盖。DSCodex 为两个 provider 各维护一个独立槽位——切回 GPT 时自动恢复它原来的档位和速度；已跟踪线程、重启后恢复的线程与新开会话行为一致。
+- **V4 Flash 是纯文本模型看不了图。** 目录为它声明 image 模态后，桌面端的贴图与 `view_image` 结果会随请求发出；路由把其中的图片并发交给 GPT（借用你的 OAuth，无需额外 key）生成文字描述，再以纯文本注入 DeepSeek 上下文。同一张图按 sha256 缓存，只描述一次。
 
 ## 工作原理
 
@@ -43,7 +44,8 @@ Codex App / CLI / IDE
 http://127.0.0.1:10110/v1   ← DSCodex 本地路由
         │
         ├── model == "deepseek/deepseek-v4-flash"
-        │        ▼
+        │        ▼   （请求里的图片先经 chatgpt.com 做 GPT 识图，
+        │              文本描述注入后再转发）
         │   https://api.deepseek.com/responses   （DeepSeek 原生 SSE）
         │
         └── 其他任何模型（gpt-5.6-*、codex-auto-review 等）
@@ -81,13 +83,14 @@ node src/cli.mjs key set   # 隐藏输入,存入 ~/.codex/dscodex/config.json (0
 node src/cli.mjs install
 node src/cli.mjs start
 node src/cli.mjs doctor
+node src/cli.mjs autostart enable   # 可选:登录自启路由 (launchd / systemd / 任务计划)
 ```
 
 然后退出重开 ChatGPT 桌面端，新建任务，选择 `🐳 V4 Flash`。
 
 Windows（PowerShell）命令相同；用环境变量方式存 key 时写成 `$env:DEEPSEEK_API_KEY="sk-…"; node src/cli.mjs key set`。
 
-命令：`install`、`sync`、`key set|status|delete`、`start`、`serve`、`status`、`doctor`、`stop`、`uninstall`。
+命令：`install`、`sync`、`key set|status|delete`、`start`、`serve`、`autostart enable|disable|status`、`status`、`doctor`、`stop`、`uninstall`。
 
 CLI 注意：`-m deepseek/deepseek-v4-flash` 不带覆盖参数时可能显示 `High`；需要 Max 时加 `-c 'model_reasoning_effort="max"'`。
 
@@ -110,10 +113,11 @@ CLI 注意：`-m deepseek/deepseek-v4-flash` 不带覆盖参数时可能显示 `
 ## 已知行为与边界
 
 - **用量统计。** Codex App「Profile」的用量统计是只读的，无法计入 DeepSeek 用量——已实测。
+- **GPT 识图。** 识图借用请求自带的 ChatGPT OAuth 头，描述质量取决于 GPT 模型（默认 `gpt-5.6-sol`，`DSCODEX_VISION_MODEL` 可换）。无 OAuth 头（纯 API key 场景）时图片原样透传；识图失败时注入明确占位文本，DeepSeek 会如实说看不到。描述缓存在路由进程内存中，重启失效；app-server 若重新编码图片，data URL 变化会导致重新描述。
 - **WebSocket 警告。** 目录声明 `prefer_websockets = false`，路由对探测回 `426`，Codex 回退 HTTP/SSE；`codex doctor` 可能仍显示警告，但请求正常。
 - **Voice、Pets、插件、技能、MCP。** 都是客户端功能；语音由 GPT-Live 驱动，不会路由到 DeepSeek。
 - **Key 存储。** 明文保存在 `~/.codex/dscodex/config.json`（权限 0600，目录 0700），重启/注销后仍然有效，仅靠文件权限保护——介意明文落盘的话不要 `key set`，退回每次会话 export `DEEPSEEK_API_KEY`（或 macOS `launchctl setenv`）。运行时取值顺序：环境变量 → 存储文件 → macOS 登录会话；`key delete` 并重启路由即彻底清除。
-- **平台差异。** 路由、key 存储、目录合并全平台一致；app-server bridge（桌面端模型菜单的状态记忆）仅 macOS——Windows 桌面端直接 spawn `CODEX_CLI_PATH`，脚本 shim 起不来（CreateProcess 只认 `.exe`），因此 Windows 上 `install` 跳过 bridge、`doctor` 对应项自动 `ok`。Windows 的配置目录同样是 `%USERPROFILE%\.codex`；key 文件的 0600 权限位在 Windows 不生效，依赖账户 ACL 保护。路由进程不会随机启动，重启后重新 `node src/cli.mjs start` 即可（key 已持久化，无需重配）。
+- **平台差异。** 路由、key 存储、目录合并全平台一致；app-server bridge（桌面端模型菜单的状态记忆）仅 macOS——Windows 桌面端直接 spawn `CODEX_CLI_PATH`，脚本 shim 起不来（CreateProcess 只认 `.exe`），因此 Windows 上 `install` 跳过 bridge、`doctor` 对应项自动 `ok`。Windows 的配置目录同样是 `%USERPROFILE%\.codex`；key 文件的 0600 权限位在 Windows 不生效，依赖账户 ACL 保护。路由默认不随机启动；`node src/cli.mjs autostart enable` 可注册登录自启（macOS launchd / Linux systemd user service / Windows 任务计划），崩溃会被自动拉起，而手动 `stop` 是优雅退出（退出码 0），不会被复活；`autostart disable` 和 `uninstall` 都会移除自启项。未开启自启时，重启后重新 `node src/cli.mjs start` 即可（key 已持久化，无需重配）。
 
 ## 任务中思考为什么反复折叠
 

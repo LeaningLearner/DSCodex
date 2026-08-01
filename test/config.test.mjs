@@ -29,7 +29,7 @@ test("catalog adds one whale-labelled V4 Flash entry with honest reasoning level
   assert.equal(model.default_reasoning_level, "max");
   assert.deepEqual(model.supported_reasoning_levels.map(({ effort }) => effort), ["high", "max"]);
   assert.equal(model.base_instructions, "You are Codex, powered by DeepSeek V4 Flash.");
-  assert.deepEqual(model.input_modalities, ["text"]);
+  assert.deepEqual(model.input_modalities, ["text", "image"]);
   assert.equal(model.prefer_websockets, false);
 });
 

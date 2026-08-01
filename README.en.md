@@ -40,7 +40,12 @@ IDE extension):
   Shell, `apply_patch`, function calls, and web search keep working.
 - **Effort/speed gets clobbered on model switch.** The desktop app writes the current effort into
   global config, so OpenAI High and DeepSeek Max overwrite each other. DSCodex keeps an
-  independent slot per provider — switching back to GPT restores its previous effort and speed.
+  independent slot per provider — switching back to GPT restores its previous effort and speed,
+  and tracked threads, threads resumed after a restart, and brand-new sessions all behave alike.
+- **V4 Flash is text-only and cannot see images.** Its catalog entry declares the image modality,
+  so pasted images and `view_image` results ride along in requests; the router hands those images
+  to GPT in parallel (borrowing your OAuth, no extra key) and injects the resulting text
+  descriptions into the DeepSeek context. Identical images are described once (sha256 cache).
 
 ## How it works
 
@@ -51,7 +56,8 @@ Codex App / CLI / IDE
 http://127.0.0.1:10110/v1   ← DSCodex loopback router
         │
         ├── model == "deepseek/deepseek-v4-flash"
-        │        ▼
+        │        ▼   (images in the request are described by GPT
+        │              via chatgpt.com first, then injected as text)
         │   https://api.deepseek.com/responses   (native DeepSeek SSE)
         │
         └── any other model (gpt-5.6-*, codex-auto-review, …)
@@ -102,6 +108,7 @@ node src/cli.mjs key set   # hidden prompt; stored in ~/.codex/dscodex/config.js
 node src/cli.mjs install
 node src/cli.mjs start
 node src/cli.mjs doctor
+node src/cli.mjs autostart enable   # optional: start the router at login (launchd / systemd / Task Scheduler)
 ```
 
 Then quit and relaunch the ChatGPT desktop app, start a new task, and choose `🐳 V4 Flash`.
@@ -109,8 +116,8 @@ Then quit and relaunch the ChatGPT desktop app, start a new task, and choose `�
 On Windows (PowerShell) the commands are identical; to pass the key via environment use
 `$env:DEEPSEEK_API_KEY="sk-…"; node src/cli.mjs key set`.
 
-Commands: `install`, `sync`, `key set|status|delete`, `start`, `serve`, `status`, `doctor`, `stop`,
-`uninstall`.
+Commands: `install`, `sync`, `key set|status|delete`, `start`, `serve`,
+`autostart enable|disable|status`, `status`, `doctor`, `stop`, `uninstall`.
 
 CLI note: `-m deepseek/deepseek-v4-flash` without the override may show `High`; add
 `-c 'model_reasoning_effort="max"'` when the CLI must use Max.
@@ -138,6 +145,12 @@ CLI note: `-m deepseek/deepseek-v4-flash` without the override may show `High`; 
 
 - **Usage stats.** The Codex app's Profile usage statistics are read-only — DeepSeek usage cannot
   be added (verified).
+- **GPT vision.** Describes borrow the request's ChatGPT OAuth headers; description quality depends
+  on the GPT model (`gpt-5.6-sol` by default, override with `DSCODEX_VISION_MODEL`). Without OAuth
+  headers (pure API-key setups) images pass through untouched; on a failed describe a clear
+  placeholder is injected so DeepSeek can honestly say it cannot see the image. Descriptions are
+  cached in router memory only; if the app-server re-encodes an image the data URL changes and the
+  image is described again.
 - **WebSocket warning.** The catalog declares `prefer_websockets = false`; the router answers
   probes with `426`, and Codex falls back to HTTP/SSE. `codex doctor` may still show a warning;
   requests succeed.
@@ -153,8 +166,12 @@ CLI note: `-m deepseek/deepseek-v4-flash` without the override may show `High`; 
   desktop apps spawn `CODEX_CLI_PATH` directly and CreateProcess cannot run a script shim (only an
   `.exe`), so `install` skips the bridge on Windows and the matching `doctor` check passes
   trivially. Windows uses the same `%USERPROFILE%\.codex` layout; the key file's 0600 mode is a
-  no-op there and protection falls back to the account ACL. The router does not auto-start with
-  the OS on any platform — rerun `node src/cli.mjs start` after a reboot (the key persists).
+  no-op there and protection falls back to the account ACL. The router does not auto-start by
+  default; `node src/cli.mjs autostart enable` registers it at login (macOS launchd / Linux
+  systemd user service / Windows Task Scheduler). Crashes are relaunched automatically, while a
+  manual `stop` exits gracefully (exit code 0) and is never resurrected; `autostart disable` and
+  `uninstall` both remove the entry. Without autostart, rerun `node src/cli.mjs start` after a
+  reboot (the key persists).
 
 ## Why reasoning folds during a task
 

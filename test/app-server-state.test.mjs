@@ -169,3 +169,112 @@ test("learns the saved provider effort when an existing thread resumes", () => {
   bridge.rewriteClient(backToDeepSeek);
   assert.equal(backToDeepSeek.params.effort, "high");
 });
+
+test("untracked thread switches restore the slot instead of adopting the carried effort", () => {
+  const paths = fixture();
+  const bridge = createAppServerState(paths);
+  bridge.rewriteClient({
+    id: 1,
+    method: "config/batchWrite",
+    params: { edits: [
+      { keyPath: "model", value: "deepseek/deepseek-v4-flash", mergeStrategy: "upsert" },
+      { keyPath: "model_reasoning_effort", value: "max", mergeStrategy: "upsert" },
+    ] },
+  });
+
+  // A thread this bridge never tracked (started before a restart, another window,
+  // a fork) switches to GPT while echoing the thread's current DeepSeek Max effort.
+  const update = {
+    id: 2,
+    method: "thread/settings/update",
+    params: { threadId: "ghost-thread", model: "gpt-5.6-sol", effort: "max" },
+  };
+  bridge.rewriteClient(update);
+  assert.equal(update.params.effort, "xhigh");
+  assert.equal(update.params.serviceTier, "priority");
+
+  const persisted = JSON.parse(readFileSync(paths.statePath, "utf8"));
+  assert.equal(persisted.openai.reasoningEffort, "xhigh");
+  assert.equal(persisted.deepseek.reasoningEffort, "max");
+});
+
+test("thread provider memory survives bridge restarts", () => {
+  const paths = fixture();
+  const first = createAppServerState(paths);
+  first.rewriteClient({
+    id: 1,
+    method: "thread/start",
+    params: { model: "deepseek/deepseek-v4-flash", config: {} },
+  });
+  first.rewriteServer({
+    id: 1,
+    result: {
+      thread: { id: "thread-9" },
+      model: "deepseek/deepseek-v4-flash",
+      reasoningEffort: "max",
+      serviceTier: null,
+    },
+  });
+
+  const second = createAppServerState(paths);
+  const update = {
+    id: 2,
+    method: "thread/settings/update",
+    params: { threadId: "thread-9", model: "gpt-5.6-sol", effort: "max" },
+  };
+  second.rewriteClient(update);
+  assert.equal(update.params.effort, "xhigh");
+  assert.equal(update.params.serviceTier, "priority");
+});
+
+test("model-only config writes mark the effort stale so new sessions restore the slot", () => {
+  const paths = fixture();
+  const bridge = createAppServerState(paths);
+  bridge.rewriteClient({
+    id: 1,
+    method: "config/batchWrite",
+    params: { edits: [
+      { keyPath: "model", value: "deepseek/deepseek-v4-flash", mergeStrategy: "upsert" },
+      { keyPath: "model_reasoning_effort", value: "max", mergeStrategy: "upsert" },
+    ] },
+  });
+
+  // A model-only write leaves model_reasoning_effort = "max" in config.toml.
+  bridge.rewriteClient({
+    id: 2,
+    method: "config/value/write",
+    params: { keyPath: "model", value: "gpt-5.6-sol", mergeStrategy: "upsert" },
+  });
+
+  // New sessions echo the stale config effort; the bridge restores the OpenAI slot.
+  const start = {
+    id: 3,
+    method: "thread/start",
+    params: { model: "gpt-5.6-sol", config: { model_reasoning_effort: "max" } },
+  };
+  bridge.rewriteClient(start);
+  assert.equal(start.params.config.model_reasoning_effort, "xhigh");
+
+  // The file is still stale, so the next new session is corrected again.
+  const again = {
+    id: 4,
+    method: "thread/start",
+    params: { model: "gpt-5.6-sol", config: { model_reasoning_effort: "max" } },
+  };
+  bridge.rewriteClient(again);
+  assert.equal(again.params.config.model_reasoning_effort, "xhigh");
+
+  // An explicit effort write re-syncs config.toml and re-enables adopting.
+  bridge.rewriteClient({
+    id: 5,
+    method: "config/batchWrite",
+    params: { edits: [{ keyPath: "model_reasoning_effort", value: "high", mergeStrategy: "upsert" }] },
+  });
+  const adopt = {
+    id: 6,
+    method: "thread/start",
+    params: { model: "gpt-5.6-sol", config: { model_reasoning_effort: "max" } },
+  };
+  bridge.rewriteClient(adopt);
+  assert.equal(adopt.params.config.model_reasoning_effort, "max");
+});
