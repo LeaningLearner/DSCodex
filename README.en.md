@@ -79,9 +79,9 @@ live in that bridge (`~/.codex/dscodex/model-selections.json`).
 The repo is designed for a clean-clone agent install. Give the agent this README (or clone the
 repo and let it read `AGENTS.md`):
 
-1. Get the DeepSeek API key from the user **without printing or persisting it**; on macOS store it
-   in the login-session environment: `launchctl setenv DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"`, then
-   unset the shell variable.
+1. Get the DeepSeek API key from the user **without printing it or committing it**; store it with
+   `DEEPSEEK_API_KEY=sk-… node src/cli.mjs key set` (or the interactive hidden prompt). It lands in
+   `~/.codex/dscodex/config.json` (mode 0600) and survives logout/reboot.
 2. `node src/cli.mjs install` — writes two marker-owned root keys and merges `🐳 V4 Flash` into
    the catalog; refuses to overwrite a user-owned `openai_base_url`.
 3. `node src/cli.mjs start`, then `node src/cli.mjs doctor` — all five checks, including the
@@ -98,9 +98,7 @@ repo and let it read `AGENTS.md`):
 
 ```bash
 cd /path/to/DSCodex
-read -s "DEEPSEEK_API_KEY?DeepSeek API Key: "; echo
-launchctl setenv DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"   # macOS login session
-unset DEEPSEEK_API_KEY
+node src/cli.mjs key set   # hidden prompt; stored in ~/.codex/dscodex/config.json (0600)
 node src/cli.mjs install
 node src/cli.mjs start
 node src/cli.mjs doctor
@@ -108,7 +106,8 @@ node src/cli.mjs doctor
 
 Then quit and relaunch the ChatGPT desktop app, start a new task, and choose `🐳 V4 Flash`.
 
-Commands: `install`, `sync`, `start`, `serve`, `status`, `doctor`, `stop`, `uninstall`.
+Commands: `install`, `sync`, `key set|status|delete`, `start`, `serve`, `status`, `doctor`, `stop`,
+`uninstall`.
 
 CLI note: `-m deepseek/deepseek-v4-flash` without the override may show `High`; add
 `-c 'model_reasoning_effort="max"'` when the CLI must use Max.
@@ -140,8 +139,11 @@ CLI note: `-m deepseek/deepseek-v4-flash` without the override may show `High`; 
   requests succeed.
 - **Voice, pets, plugins, skills, MCP.** All client-side; voice is driven by GPT-Live and never
   routes to DeepSeek.
-- **API key persistence.** The key lives only in the server process and the macOS login-session
-  environment; re-export it after logout/reboot.
+- **API key storage.** The key is stored in plaintext at `~/.codex/dscodex/config.json` (mode 0600,
+  directory 0700); it survives logout/reboot and is protected only by file permissions. If plaintext
+  at rest is unacceptable, skip `key set` and export `DEEPSEEK_API_KEY` per session instead (or
+  `launchctl setenv` on macOS). Resolution order at runtime: environment variable, then the stored
+  file, then the macOS login session; `key delete` plus a router restart removes it completely.
 
 ## Why reasoning folds during a task
 

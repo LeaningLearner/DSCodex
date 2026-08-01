@@ -4,9 +4,12 @@ This repository adds DeepSeek V4 Flash to the stock ChatGPT / Codex app through 
 If a user asks you to install it, follow the "Install by a coding agent" section in `README.md`.
 The non-negotiable details:
 
-1. Never print, persist, or commit the DeepSeek API key. On macOS, store it in the login-session
-   environment with `launchctl setenv DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"` and immediately unset
-   the shell variable.
+1. Never print or commit the DeepSeek API key. Persist it with `node src/cli.mjs key set`
+   (`DEEPSEEK_API_KEY` env or the hidden prompt); it is stored at
+   `~/.codex/dscodex/config.json` with mode 0600 and survives logout/reboot. Resolution order at
+   runtime: `DEEPSEEK_API_KEY` env (one-off override), then the stored file, then the legacy macOS
+   login-session value. Never store the key in `~/.codex/config.toml`; `uninstall` deletes the
+   stored key file.
 2. Run `node src/cli.mjs install`, then `node src/cli.mjs start`, then
    `node src/cli.mjs doctor`. Doctor must report `ok` for config, catalog, proxy, key, and the
    app-server bridge. Install must refuse a user-owned `CODEX_CLI_PATH`; it may only install the

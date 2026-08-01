@@ -21,6 +21,7 @@ export function pathsFor(codexHome) {
     catalog: join(codexHome, "dscodex-models.json"),
     backup: join(codexHome, "config.toml.pre-dscodex.bak"),
     stateDir: join(codexHome, "dscodex"),
+    keyFile: join(codexHome, "dscodex", "config.json"),
     selectionState: join(codexHome, "dscodex", "model-selections.json"),
     bridgeShim: join(codexHome, "dscodex", "codex-cli-bridge.sh"),
     pid: join(codexHome, "dscodex", "server.pid"),

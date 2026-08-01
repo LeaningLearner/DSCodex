@@ -66,7 +66,7 @@ http://127.0.0.1:10110/v1   ← DSCodex 本地路由
 
 仓库按“克隆下来直接让 Agent 装”设计。把本 README 交给 Agent（或克隆仓库让它读 `AGENTS.md`）：
 
-1. 拿到 DeepSeek API Key，**不要打印、不要落盘**；macOS 写入登录会话环境：`launchctl setenv DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"`，然后立刻 unset。
+1. 拿到 DeepSeek API Key，**不要打印、不要提交进仓库**；存入本地配置：`DEEPSEEK_API_KEY=sk-… node src/cli.mjs key set`（或交互隐藏输入），落在 `~/.codex/dscodex/config.json`（权限 0600），重启/注销后仍有效。
 2. `node src/cli.mjs install` —— 写入两条带标记的根配置，把 `🐳 V4 Flash` 合入模型目录；遇到用户自有的 `openai_base_url` 拒绝覆盖。
 3. `node src/cli.mjs start`，再 `node src/cli.mjs doctor` —— 五项检查（含 app-server bridge）必须全部 `ok`。
 4. `npm test` —— 全部测试通过。
@@ -77,9 +77,7 @@ http://127.0.0.1:10110/v1   ← DSCodex 本地路由
 
 ```bash
 cd /path/to/DSCodex
-read -s "DEEPSEEK_API_KEY?DeepSeek API Key: "; echo
-launchctl setenv DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"   # macOS 登录会话
-unset DEEPSEEK_API_KEY
+node src/cli.mjs key set   # 隐藏输入,存入 ~/.codex/dscodex/config.json (0600)
 node src/cli.mjs install
 node src/cli.mjs start
 node src/cli.mjs doctor
@@ -87,7 +85,7 @@ node src/cli.mjs doctor
 
 然后退出重开 ChatGPT 桌面端，新建任务，选择 `🐳 V4 Flash`。
 
-命令：`install`、`sync`、`start`、`serve`、`status`、`doctor`、`stop`、`uninstall`。
+命令：`install`、`sync`、`key set|status|delete`、`start`、`serve`、`status`、`doctor`、`stop`、`uninstall`。
 
 CLI 注意：`-m deepseek/deepseek-v4-flash` 不带覆盖参数时可能显示 `High`；需要 Max 时加 `-c 'model_reasoning_effort="max"'`。
 
@@ -111,7 +109,7 @@ CLI 注意：`-m deepseek/deepseek-v4-flash` 不带覆盖参数时可能显示 `
 - **用量统计。** Codex App「Profile」的用量统计是只读的，无法计入 DeepSeek 用量——已实测。
 - **WebSocket 警告。** 目录声明 `prefer_websockets = false`，路由对探测回 `426`，Codex 回退 HTTP/SSE；`codex doctor` 可能仍显示警告，但请求正常。
 - **Voice、Pets、插件、技能、MCP。** 都是客户端功能；语音由 GPT-Live 驱动，不会路由到 DeepSeek。
-- **Key 不落盘。** 只存在于服务进程和 macOS 登录会话环境，注销/重启后需重新设置。
+- **Key 存储。** 明文保存在 `~/.codex/dscodex/config.json`（权限 0600，目录 0700），重启/注销后仍然有效，仅靠文件权限保护——介意明文落盘的话不要 `key set`，退回每次会话 export `DEEPSEEK_API_KEY`（或 macOS `launchctl setenv`）。运行时取值顺序：环境变量 → 存储文件 → macOS 登录会话；`key delete` 并重启路由即彻底清除。
 
 ## 任务中思考为什么反复折叠
 

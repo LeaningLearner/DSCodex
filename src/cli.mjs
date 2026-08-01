@@ -10,9 +10,11 @@ import {
 } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { dirname } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { buildCatalog, syncCatalog } from "./catalog.mjs";
 import { install, uninstall } from "./config.mjs";
+import { deleteStoredKey, readStoredKey, writeStoredKey } from "./keys.mjs";
 import { createProxyServer } from "./proxy.mjs";
 import { DEFAULT_PORT, HOST, VERSION, pathsFor, resolveCodexHome } from "./constants.mjs";
 
@@ -109,8 +111,7 @@ function runtime(env = process.env) {
   return { codexHome, paths: pathsFor(codexHome) };
 }
 
-function resolveDeepSeekKey(env = process.env) {
-  if (env.DEEPSEEK_API_KEY?.trim()) return env.DEEPSEEK_API_KEY.trim();
+function launchctlKey() {
   if (process.platform !== "darwin") return "";
   try {
     return execFileSync("/bin/launchctl", ["getenv", "DEEPSEEK_API_KEY"], {
@@ -120,6 +121,40 @@ function resolveDeepSeekKey(env = process.env) {
   } catch {
     return "";
   }
+}
+
+// Resolution order: one-off env override, then the durable stored key, then the
+// legacy macOS login-session value so installs created before `key set` keep working.
+function resolveDeepSeekKey(env = process.env, keyFile = "") {
+  if (env.DEEPSEEK_API_KEY?.trim()) return env.DEEPSEEK_API_KEY.trim();
+  const stored = keyFile ? readStoredKey(keyFile) : "";
+  if (stored) return stored;
+  return launchctlKey();
+}
+
+function keySource(keyFile, env = process.env) {
+  if (env.DEEPSEEK_API_KEY?.trim()) return "environment";
+  if (readStoredKey(keyFile)) return `stored in ${keyFile}`;
+  if (launchctlKey()) return "macOS launchctl login session";
+  return "";
+}
+
+function promptSecret(prompt) {
+  return new Promise((resolve, reject) => {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      reject(new Error("Interactive prompt unavailable; pass DEEPSEEK_API_KEY via the environment"));
+      return;
+    }
+    const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    rl._writeToOutput = (chunk) => {
+      process.stdout.write(chunk.includes(prompt) ? chunk : "*");
+    };
+    rl.question(prompt, (answer) => {
+      rl.close();
+      process.stdout.write("\n");
+      resolve(answer.trim());
+    });
+  });
 }
 
 async function health(port) {
@@ -147,7 +182,7 @@ async function serve(port) {
   process.title = "dscodex";
   const { paths } = runtime();
   syncIfPossible(paths);
-  const deepSeekKey = resolveDeepSeekKey();
+  const deepSeekKey = resolveDeepSeekKey(process.env, paths.keyFile);
   const server = createProxyServer({ deepSeekKey, models: loadModels(paths) });
   server.listen(port, HOST, () => {
     console.log(`DSCodex ${VERSION} listening at http://${HOST}:${port}/v1`);
@@ -167,7 +202,7 @@ async function start(port) {
   const { paths } = runtime();
   mkdirSync(paths.stateDir, { recursive: true, mode: 0o700 });
   syncIfPossible(paths);
-  const deepSeekKey = resolveDeepSeekKey();
+  const deepSeekKey = resolveDeepSeekKey(process.env, paths.keyFile);
   const logFd = openSync(paths.log, "a", 0o600);
   const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "serve", "--port", String(port)], {
     detached: true,
@@ -216,6 +251,28 @@ async function status(port) {
   console.log(`running (${HOST}:${port}); DeepSeek key ${ready.deepseek_key ? "configured" : "missing"}`);
 }
 
+async function manageKey(subcommand, paths, port) {
+  if (subcommand === "set") {
+    const key = process.env.DEEPSEEK_API_KEY?.trim() || launchctlKey() || await promptSecret("DeepSeek API Key: ");
+    writeStoredKey(paths.keyFile, key);
+    console.log(`Stored DeepSeek API key in ${paths.keyFile} (mode 0600)`);
+    if (await health(port)) console.log("Restart the router (stop && start) so the running server picks up the new key");
+    return;
+  }
+  if (subcommand === "delete") {
+    deleteStoredKey(paths.keyFile);
+    console.log(`Removed ${paths.keyFile}`);
+    if (await health(port)) console.log("Restart the router (stop && start) to drop the in-memory key");
+    return;
+  }
+  if (subcommand === "status") {
+    const source = keySource(paths.keyFile);
+    console.log(source ? `DeepSeek key: configured (${source})` : "DeepSeek key: missing");
+    return;
+  }
+  throw new Error(`Unknown key subcommand: ${subcommand}`);
+}
+
 async function doctor(port) {
   const { paths } = runtime();
   const config = existsSync(paths.config) ? readFileSync(paths.config, "utf8") : "";
@@ -240,6 +297,9 @@ Usage: dscodex <command> [--port ${DEFAULT_PORT}]
 
   install     merge 🐳 V4 Flash into the Codex model catalog
   sync        refresh native GPT entries in the merged catalog
+  key set     store the DeepSeek API key (hidden prompt, or DEEPSEEK_API_KEY env)
+  key status  show where the DeepSeek key comes from
+  key delete  remove the stored DeepSeek key
   start       run the loopback router in the background
   serve       run the loopback router in the foreground
   status      show router state
@@ -247,7 +307,8 @@ Usage: dscodex <command> [--port ${DEFAULT_PORT}]
   stop        stop the background router
   uninstall   remove only DSCodex-owned Codex configuration
 
-Set DEEPSEEK_API_KEY in the environment before start/serve. The key is never written to disk.`);
+Key sources, in order: DEEPSEEK_API_KEY env, ~/.codex/dscodex/config.json (0600),
+then the macOS launchctl login session. The stored key survives reboots.`);
 }
 
 async function main() {
@@ -269,6 +330,7 @@ async function main() {
       console.log(`Synced ${catalog.models.length} catalog entries`);
       break;
     }
+    case "key": await manageKey(args[0] ?? "status", paths, port); break;
     case "start": await start(port); break;
     case "serve": await serve(port); break;
     case "status": await status(port); break;
