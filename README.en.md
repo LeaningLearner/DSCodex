@@ -67,7 +67,7 @@ live in that bridge (`~/.codex/dscodex/model-selections.json`).
 
 ## Requirements
 
-- macOS or Linux, Node.js 20+ (Node 26 recommended: built-in zstd)
+- macOS, Linux, or Windows (native, no WSL), Node.js 20+ (Node 26 recommended: built-in zstd)
 - A signed-in ChatGPT desktop app or Codex CLI (for the GPT OAuth models)
 - A DeepSeek API key (`sk-…`)
 - Port `10110` free (change with `--port` or `DSCODEX_PORT`)
@@ -106,6 +106,9 @@ node src/cli.mjs doctor
 
 Then quit and relaunch the ChatGPT desktop app, start a new task, and choose `🐳 V4 Flash`.
 
+On Windows (PowerShell) the commands are identical; to pass the key via environment use
+`$env:DEEPSEEK_API_KEY="sk-…"; node src/cli.mjs key set`.
+
 Commands: `install`, `sync`, `key set|status|delete`, `start`, `serve`, `status`, `doctor`, `stop`,
 `uninstall`.
 
@@ -126,6 +129,7 @@ CLI note: `-m deepseek/deepseek-v4-flash` without the override may show `High`; 
 | --- | --- |
 | Native model picker in the ChatGPT macOS app | Supported |
 | Codex CLI / IDE extension | Supported |
+| Native Windows (Codex CLI / IDE extension) | Supported; the app-server bridge is macOS-only, see below |
 | Multi-round DeepSeek tool calling | Supported through the native Responses API |
 | GPT / Codex OAuth models | Supported through unchanged passthrough |
 | chatgpt.com web app | Not supported; DSCodex integrates with the local Codex runtime |
@@ -144,6 +148,13 @@ CLI note: `-m deepseek/deepseek-v4-flash` without the override may show `High`; 
   at rest is unacceptable, skip `key set` and export `DEEPSEEK_API_KEY` per session instead (or
   `launchctl setenv` on macOS). Resolution order at runtime: environment variable, then the stored
   file, then the macOS login session; `key delete` plus a router restart removes it completely.
+- **Platform differences.** Routing, key storage, and catalog merging behave identically on every
+  platform; the app-server bridge (picker-state memory for the desktop app) is macOS-only. Windows
+  desktop apps spawn `CODEX_CLI_PATH` directly and CreateProcess cannot run a script shim (only an
+  `.exe`), so `install` skips the bridge on Windows and the matching `doctor` check passes
+  trivially. Windows uses the same `%USERPROFILE%\.codex` layout; the key file's 0600 mode is a
+  no-op there and protection falls back to the account ACL. The router does not auto-start with
+  the OS on any platform — rerun `node src/cli.mjs start` after a reboot (the key persists).
 
 ## Why reasoning folds during a task
 

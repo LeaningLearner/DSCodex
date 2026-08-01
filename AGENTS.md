@@ -16,7 +16,10 @@ The non-negotiable details:
    DSCodex wrapper when that login-session variable is absent or already DSCodex-owned. The
    variable must point at the generated shim `~/.codex/dscodex/codex-cli-bridge.sh`, never
    directly at `src/codex-wrapper.mjs`: GUI apps get a bare launchd PATH without Homebrew, so a
-   `#!/usr/bin/env node` shebang fails there and the shim embeds the absolute node path.
+   `#!/usr/bin/env node` shebang fails there and the shim embeds the absolute node path. The
+   bridge is macOS-only: Windows desktop apps spawn `CODEX_CLI_PATH` directly and cannot run a
+   script shim (CreateProcess requires an `.exe`), so on Windows `install` skips the bridge and
+   the `doctor` bridge check passes trivially.
 3. Run `npm test`; all tests must pass.
 4. The ChatGPT desktop app must be fully quit (`⌘Q`) and relaunched, and the user must start a NEW
    task to see `🐳 V4 Flash`. Existing tasks keep their old model state.

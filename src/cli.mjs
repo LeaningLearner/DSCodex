@@ -50,6 +50,8 @@ function stockCodexPath() {
 }
 
 function nodePath() {
+  // Windows has no versioned-Cellar problem; the running interpreter is stable.
+  if (process.platform === "win32") return process.execPath;
   // Prefer the PATH-resolved `node` (a stable Homebrew symlink); process.execPath
   // resolves to the versioned Cellar binary, which disappears on the next upgrade.
   try {
@@ -206,6 +208,7 @@ async function start(port) {
   const logFd = openSync(paths.log, "a", 0o600);
   const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "serve", "--port", String(port)], {
     detached: true,
+    windowsHide: true,
     env: { ...process.env, ...(deepSeekKey ? { DEEPSEEK_API_KEY: deepSeekKey } : {}) },
     stdio: ["ignore", logFd, logFd],
   });
@@ -282,6 +285,8 @@ async function doctor(port) {
     catalog_present: existsSync(paths.catalog),
     proxy_running: Boolean(ready),
     deepseek_key_in_proxy: Boolean(ready?.deepseek_key),
+    // The app-server bridge is macOS-only: Windows GUI apps cannot spawn a script
+    // shim (CreateProcess requires an .exe), so the check is skipped elsewhere.
     app_server_bridge: process.platform !== "darwin" || (
       launchctlGet("CODEX_CLI_PATH") === paths.bridgeShim && Boolean(launchctlGet("DSCODEX_REAL_CODEX"))
     ),
@@ -307,8 +312,9 @@ Usage: dscodex <command> [--port ${DEFAULT_PORT}]
   stop        stop the background router
   uninstall   remove only DSCodex-owned Codex configuration
 
-Key sources, in order: DEEPSEEK_API_KEY env, ~/.codex/dscodex/config.json (0600),
-then the macOS launchctl login session. The stored key survives reboots.`);
+Key sources, in order: DEEPSEEK_API_KEY env, ~/.codex/dscodex/config.json${
+  process.platform === "darwin" ? ", then the macOS launchctl login session" : ""
+}. The stored key survives reboots.`);
 }
 
 async function main() {

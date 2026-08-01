@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import { createAppServerState } from "./app-server-state.mjs";
+import { needsShellSpawn } from "./constants.mjs";
 
 const self = resolve(process.argv[1]);
 const realCodex = process.env.DSCODEX_REAL_CODEX?.trim();
@@ -16,7 +17,12 @@ if (!realCodex || !existsSync(realCodex) || resolve(realCodex) === self) {
 const args = process.argv.slice(2);
 const env = { ...process.env };
 delete env.CODEX_CLI_PATH;
-const child = spawn(realCodex, args, { env, stdio: ["pipe", "pipe", "inherit"] });
+const child = spawn(realCodex, args, {
+  env,
+  stdio: ["pipe", "pipe", "inherit"],
+  shell: needsShellSpawn(realCodex),
+  windowsHide: true,
+});
 const appServer = args.includes("app-server");
 
 if (!appServer) {

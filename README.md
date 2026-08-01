@@ -55,7 +55,7 @@ http://127.0.0.1:10110/v1   ← DSCodex 本地路由
 
 ## 环境要求
 
-- macOS 或 Linux，Node.js 20+（推荐 26，自带 zstd）
+- macOS、Linux 或 Windows（原生，无需 WSL），Node.js 20+（推荐 26，自带 zstd）
 - 已登录的 ChatGPT 桌面端或 Codex CLI（GPT OAuth 模型需要）
 - DeepSeek API Key（`sk-…`）
 - 端口 `10110` 空闲（`--port` 或 `DSCODEX_PORT` 可改）
@@ -85,6 +85,8 @@ node src/cli.mjs doctor
 
 然后退出重开 ChatGPT 桌面端，新建任务，选择 `🐳 V4 Flash`。
 
+Windows（PowerShell）命令相同；用环境变量方式存 key 时写成 `$env:DEEPSEEK_API_KEY="sk-…"; node src/cli.mjs key set`。
+
 命令：`install`、`sync`、`key set|status|delete`、`start`、`serve`、`status`、`doctor`、`stop`、`uninstall`。
 
 CLI 注意：`-m deepseek/deepseek-v4-flash` 不带覆盖参数时可能显示 `High`；需要 Max 时加 `-c 'model_reasoning_effort="max"'`。
@@ -100,6 +102,7 @@ CLI 注意：`-m deepseek/deepseek-v4-flash` 不带覆盖参数时可能显示 `
 | --- | --- |
 | ChatGPT macOS 桌面端原生模型菜单 | 支持 |
 | Codex CLI / IDE 扩展 | 支持 |
+| Windows 原生（Codex CLI / IDE 扩展） | 支持；app-server bridge 为 macOS 专属，见下文 |
 | DeepSeek 多轮工具调用 | 支持，走原生 Responses API |
 | GPT / Codex OAuth 模型 | 支持，流量原样旁路 |
 | chatgpt.com 网页版 | 不支持；DSCodex 接入的是本地 Codex 运行时 |
@@ -110,6 +113,7 @@ CLI 注意：`-m deepseek/deepseek-v4-flash` 不带覆盖参数时可能显示 `
 - **WebSocket 警告。** 目录声明 `prefer_websockets = false`，路由对探测回 `426`，Codex 回退 HTTP/SSE；`codex doctor` 可能仍显示警告，但请求正常。
 - **Voice、Pets、插件、技能、MCP。** 都是客户端功能；语音由 GPT-Live 驱动，不会路由到 DeepSeek。
 - **Key 存储。** 明文保存在 `~/.codex/dscodex/config.json`（权限 0600，目录 0700），重启/注销后仍然有效，仅靠文件权限保护——介意明文落盘的话不要 `key set`，退回每次会话 export `DEEPSEEK_API_KEY`（或 macOS `launchctl setenv`）。运行时取值顺序：环境变量 → 存储文件 → macOS 登录会话；`key delete` 并重启路由即彻底清除。
+- **平台差异。** 路由、key 存储、目录合并全平台一致；app-server bridge（桌面端模型菜单的状态记忆）仅 macOS——Windows 桌面端直接 spawn `CODEX_CLI_PATH`，脚本 shim 起不来（CreateProcess 只认 `.exe`），因此 Windows 上 `install` 跳过 bridge、`doctor` 对应项自动 `ok`。Windows 的配置目录同样是 `%USERPROFILE%\.codex`；key 文件的 0600 权限位在 Windows 不生效，依赖账户 ACL 保护。路由进程不会随机启动，重启后重新 `node src/cli.mjs start` 即可（key 已持久化，无需重配）。
 
 ## 任务中思考为什么反复折叠
 
