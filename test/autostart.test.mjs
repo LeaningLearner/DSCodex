@@ -67,6 +67,29 @@ test("windows vbs hides the console and appends to the router log", () => {
   assert.ok(vbs.trimEnd().endsWith(", 0, False"));
 });
 
+test("windows vbs rewrites home-relative log paths to %USERPROFILE% for non-ASCII homes", () => {
+  const vbs = buildWindowsVbs({
+    nodePath: "C:\\Program Files\\nodejs\\node.exe",
+    cliPath: "C:\\x\\src\\cli.mjs",
+    port: 10110,
+    logPath: "C:\\Users\\王小明\\.codex\\dscodex\\server.log",
+    homeDir: "C:\\Users\\王小明",
+  });
+  assert.ok(vbs.includes('>> ""%USERPROFILE%\\.codex\\dscodex\\server.log"" 2>&1'));
+  assert.equal(vbs.match(/[^\x00-\x7F]/g), null);
+});
+
+test("windows vbs keeps literal log paths outside the user home", () => {
+  const vbs = buildWindowsVbs({
+    nodePath: "C:\\Program Files\\nodejs\\node.exe",
+    cliPath: "C:\\x\\src\\cli.mjs",
+    port: 10110,
+    logPath: "D:\\logs\\server.log",
+    homeDir: "C:\\Users\\王小明",
+  });
+  assert.ok(vbs.includes('>> ""D:\\logs\\server.log"" 2>&1'));
+});
+
 test("serve owns its pid file across start and graceful shutdown", { timeout: 20_000 }, async () => {
   const codexHome = mkdtempSync(join(tmpdir(), "dscodex-serve-"));
   const port = 20_000 + Math.floor(Math.random() * 20_000);
