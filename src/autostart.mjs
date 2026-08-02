@@ -84,7 +84,17 @@ WantedBy=default.target
 
 // The task runs wscript.exe on this one-liner so no console window flashes at
 // logon; cmd routes stdout/stderr into the regular server.log.
-export function buildWindowsVbs({ nodePath, cliPath, port, logPath }) {
-  const cmd = `cmd /c ""${nodePath}" "${cliPath}" serve --port ${port} >> "${logPath}" 2>&1"`;
+export function buildWindowsVbs({ nodePath, cliPath, port, logPath, homeDir = homedir() }) {
+  // wscript reads .vbs files as ANSI (GBK on zh-CN systems), so a literal log
+  // path containing a non-ASCII user name becomes mojibake and cmd cannot open
+  // it. Redirect through %USERPROFILE% (expanded by cmd at runtime) instead.
+  let log = logPath;
+  const homePrefix = homeDir.replace(/[\\/]+$/, "");
+  const lowerLog = logPath.toLowerCase();
+  const lowerHome = homePrefix.toLowerCase();
+  if (lowerLog.startsWith(`${lowerHome}\\`) || lowerLog.startsWith(`${lowerHome}/`)) {
+    log = `%USERPROFILE%${logPath.slice(homePrefix.length)}`;
+  }
+  const cmd = `cmd /c ""${nodePath}" "${cliPath}" serve --port ${port} >> "${log}" 2>&1"`;
   return `CreateObject("Wscript.Shell").Run "${cmd.replaceAll('"', '""')}", 0, False\r\n`;
 }
