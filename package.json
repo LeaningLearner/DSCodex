@@ -1,6 +1,6 @@
 {
   "name": "dscodex",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "type": "module",
   "description": "Minimal DeepSeek V4 Flash Responses API integration for Codex",

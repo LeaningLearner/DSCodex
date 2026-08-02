@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export const VERSION = "0.5.0";
+export const VERSION = "0.5.1";
 export const DEFAULT_PORT = 10110;
 export const HOST = "127.0.0.1";
 export const DEEPSEEK_PICKER_SLUG = "deepseek/deepseek-v4-flash";
