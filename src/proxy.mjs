@@ -1,4 +1,5 @@
 import http from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import { brotliDecompressSync, gunzipSync, inflateSync, zstdDecompressSync } from "node:zlib";
 import { Readable } from "node:stream";
 import {
@@ -43,6 +44,11 @@ const HOP_BY_HOP_HEADERS = new Set([
   "upgrade",
 ]);
 
+const DEFAULT_MAX_REQUEST_BYTES = 64 * 1024 * 1024;
+const DEFAULT_MAX_DECODED_BYTES = 128 * 1024 * 1024;
+const SHUTDOWN_HEADER = "x-dscodex-shutdown-token";
+const SHUTDOWN_PATH = "/_dscodex/shutdown";
+
 function isDeepSeekModel(model) {
   return model === DEEPSEEK_PICKER_SLUG || model === DEEPSEEK_WIRE_MODEL;
 }
@@ -79,22 +85,57 @@ export function buildDeepSeekBody(input) {
   return body;
 }
 
-function decodeBody(buffer, encoding) {
+function decodeBody(buffer, encoding, maxOutputLength) {
+  const options = { maxOutputLength };
   switch ((encoding ?? "").toLowerCase()) {
-    case "gzip": return gunzipSync(buffer);
-    case "deflate": return inflateSync(buffer);
-    case "br": return brotliDecompressSync(buffer);
-    case "zstd": return zstdDecompressSync(buffer);
+    case "gzip": return gunzipSync(buffer, options);
+    case "deflate": return inflateSync(buffer, options);
+    case "br": return brotliDecompressSync(buffer, options);
+    case "zstd": return zstdDecompressSync(buffer, options);
     case "":
     case "identity": return buffer;
     default: throw new Error(`Unsupported content-encoding: ${encoding}`);
   }
 }
 
-async function readRequestBody(request) {
+async function readRequestBody(request, maxBytes) {
+  const declared = Number(request.headers["content-length"]);
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    request.resume();
+    const error = new Error("Request body exceeds the configured limit");
+    error.statusCode = 413;
+    throw error;
+  }
   const chunks = [];
-  for await (const chunk of request) chunks.push(chunk);
+  let total = 0;
+  for await (const chunk of request) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      request.resume();
+      const error = new Error("Request body exceeds the configured limit");
+      error.statusCode = 413;
+      throw error;
+    }
+    chunks.push(chunk);
+  }
   return Buffer.concat(chunks);
+}
+
+function validRouterToken(token) {
+  return typeof token === "string" && /^[A-Za-z0-9_-]{43}$/.test(token);
+}
+
+function tokenMatches(candidate, expected) {
+  const actual = Buffer.from(candidate ?? "", "utf8");
+  const target = Buffer.from(expected, "utf8");
+  return actual.length === target.length && timingSafeEqual(actual, target);
+}
+
+function authorizedPath(pathname, routerToken) {
+  const firstSlash = pathname.indexOf("/", 1);
+  const candidate = firstSlash === -1 ? pathname.slice(1) : pathname.slice(1, firstSlash);
+  if (!tokenMatches(candidate, routerToken)) return null;
+  return firstSlash === -1 ? "/" : pathname.slice(firstSlash) || "/";
 }
 
 function copyRequestHeaders(request, deepSeekKey) {
@@ -135,16 +176,51 @@ export function createProxyServer({
   models = [],
   logger = console,
   visionModel,
+  routerToken,
+  shutdownToken = "",
+  instanceId = "",
+  onShutdown,
+  maxRequestBytes = DEFAULT_MAX_REQUEST_BYTES,
+  maxDecodedBytes = DEFAULT_MAX_DECODED_BYTES,
 } = {}) {
+  if (!validRouterToken(routerToken)) throw new Error("DSCodex routerToken is required");
+  if (shutdownToken && !validRouterToken(shutdownToken)) throw new Error("Invalid DSCodex shutdownToken");
   const vision = createVisionDescriber({ baseUrl: chatGptBaseUrl, model: visionModel, logger });
   const server = http.createServer(async (request, response) => {
     const startedAt = Date.now();
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    if (request.method === "GET" && url.pathname === "/health") {
-      json(response, 200, { ok: true, deepseek_key: Boolean(deepSeekKey) });
+    const pathname = authorizedPath(url.pathname, routerToken);
+    if (!pathname) {
+      json(response, 404, { error: { message: "Not found" } });
       return;
     }
-    if (request.method === "GET" && (url.pathname === "/models" || url.pathname === "/v1/models")) {
+    if (request.method === "POST" && pathname === SHUTDOWN_PATH) {
+      request.resume();
+      if (!shutdownToken || !tokenMatches(request.headers[SHUTDOWN_HEADER], shutdownToken)) {
+        json(response, 401, { error: { message: "Invalid shutdown token" } });
+        return;
+      }
+      json(response, 202, { ok: true });
+      if (typeof onShutdown === "function") {
+        setImmediate(() => {
+          try {
+            onShutdown();
+          } catch (error) {
+            logger.error?.(`shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        });
+      }
+      return;
+    }
+    if (request.method === "GET" && pathname === "/health") {
+      json(response, 200, {
+        ok: true,
+        deepseek_key: Boolean(deepSeekKey),
+        ...(instanceId ? { instance_id: instanceId } : {}),
+      });
+      return;
+    }
+    if (request.method === "GET" && (pathname === "/models" || pathname === "/v1/models")) {
       json(response, 200, { models });
       return;
     }
@@ -153,35 +229,39 @@ export function createProxyServer({
       return;
     }
 
+    let direction = "unknown";
     try {
-      const raw = await readRequestBody(request);
-      const decoded = decodeBody(raw, request.headers["content-encoding"]);
+      const raw = await readRequestBody(request, maxRequestBytes);
+      let decoded;
+      try {
+        decoded = decodeBody(raw, request.headers["content-encoding"], maxDecodedBytes);
+      } catch (error) {
+        if (error?.code === "ERR_BUFFER_TOO_LARGE") error.statusCode = 413;
+        throw error;
+      }
+      if (decoded.length > maxDecodedBytes) {
+        const error = new Error("Decoded request body exceeds the configured limit");
+        error.statusCode = 413;
+        throw error;
+      }
       const parsed = JSON.parse(decoded.toString("utf8"));
       const deepSeek = isDeepSeekModel(parsed.model);
+      direction = deepSeek ? "deepseek" : "chatgpt";
       if (deepSeek && !deepSeekKey) {
         json(response, 503, { error: { message: "DEEPSEEK_API_KEY is not configured in the DSCodex server process" } });
         return;
       }
-      // The loopback port injects the stored DeepSeek key upstream, so it must
-      // not answer anonymous callers (browsers, sandboxed processes, or other
-      // local tools). The stock Codex client always sends its own credentials
-      // (ChatGPT OAuth or an API key), which is enough to pass this gate.
-      if (deepSeek && !request.headers.authorization?.trim()) {
-        json(response, 401, { error: { message: "Missing authorization header: the Codex client must authenticate before the local router can use the DeepSeek key" } });
-        return;
-      }
-
       let outgoingBody = raw;
       if (deepSeek) {
         const body = buildDeepSeekBody(parsed);
         // DeepSeek V4 is text-only: borrow the caller's GPT OAuth to describe any
         // attached images, then inject the descriptions as plain input_text.
         const rewritten = await vision.rewriteImages(body, request.headers);
-        if (rewritten) logger.info?.(`vision: described ${rewritten} image(s) for ${url.pathname}`);
+        if (rewritten) logger.info?.(`vision: described ${rewritten} image(s) for ${pathname}`);
         outgoingBody = Buffer.from(JSON.stringify(body));
       }
       const baseUrl = deepSeek ? deepSeekBaseUrl : chatGptBaseUrl;
-      const target = new URL(`${baseUrl.replace(/\/$/, "")}${upstreamPath(url.pathname)}${url.search}`);
+      const target = new URL(`${baseUrl.replace(/\/$/, "")}${upstreamPath(pathname)}${url.search}`);
       const headers = copyRequestHeaders(request, deepSeek ? deepSeekKey : undefined);
       if (!deepSeek && request.headers["content-encoding"]) {
         headers.set("content-encoding", request.headers["content-encoding"]);
@@ -204,7 +284,7 @@ export function createProxyServer({
       response.statusCode = upstream.status;
       response.statusMessage = upstream.statusText;
       copyResponseHeaders(upstream, response);
-      logger.info?.(`${deepSeek ? "deepseek" : "chatgpt"} ${url.pathname} -> ${upstream.status} ${Date.now() - startedAt}ms`);
+      logger.info?.(`${deepSeek ? "deepseek" : "chatgpt"} ${pathname} -> ${upstream.status} ${Date.now() - startedAt}ms`);
       if (!upstream.body) {
         response.end();
         return;
@@ -218,9 +298,10 @@ export function createProxyServer({
       });
       stream.pipe(response);
     } catch (error) {
-      logger.error?.(`proxy error: ${error instanceof Error ? error.message : String(error)}`);
+      logger.error?.(`proxy error (${direction} ${pathname}): ${error instanceof Error ? error.message : String(error)}`);
       if (!response.headersSent && !response.destroyed) {
-        json(response, 502, { error: { message: "DSCodex upstream request failed" } });
+        const status = Number.isInteger(error?.statusCode) ? error.statusCode : 502;
+        json(response, status, { error: { message: status === 413 ? "Request body too large" : "DSCodex upstream request failed" } });
       } else {
         response.destroy(error instanceof Error ? error : undefined);
       }

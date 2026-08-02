@@ -11,7 +11,7 @@
   <a href="https://api-docs.deepseek.com/zh-cn/guides/responses_api/"><img src="https://img.shields.io/badge/DeepSeek-V4_Flash-4D6BFE?style=flat-square" alt="DeepSeek V4 Flash" /></a>
   <br />
   <a href="https://api-docs.deepseek.com/zh-cn/guides/responses_api/"><img src="https://img.shields.io/badge/Responses_API-native-00A98F?style=flat-square" alt="Native Responses API" /></a>
-  <a href="package.json"><img src="https://img.shields.io/badge/Node.js-%E2%89%A520-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js 20 or newer" /></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/Node.js-%E2%89%A524.5-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js 24.5 or newer" /></a>
   <a href="#requirements"><img src="https://img.shields.io/badge/macOS_%7C_Linux-supported-000000?style=flat-square&logo=apple&logoColor=white" alt="macOS and Linux supported" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-F1C40F?style=flat-square" alt="MIT license" /></a>
 </p>
@@ -53,7 +53,7 @@ IDE extension):
 Codex App / CLI / IDE
         │  HTTP/SSE (zstd-compressed Requests, OAuth headers)
         ▼
-http://127.0.0.1:10110/v1   ← DSCodex loopback router
+http://127.0.0.1:10110/<router-token>/v1   ← authenticated DSCodex loopback router
         │
         ├── model == "deepseek/deepseek-v4-flash"
         │        ▼   (images in the request are described by GPT
@@ -73,7 +73,7 @@ live in that bridge (`~/.codex/dscodex/model-selections.json`).
 
 ## Requirements
 
-- macOS, Linux, or Windows (native, no WSL), Node.js 20+ (Node 26 recommended: built-in zstd)
+- macOS, Linux, or Windows (native, no WSL), Node.js 24.5+ (Node 26 recommended: built-in zstd; proxy mode relies on `--use-env-proxy`)
 - A signed-in ChatGPT desktop app or Codex CLI (for the GPT OAuth models)
 - A DeepSeek API key (`sk-…`)
 - Port `10110` free (change with `--port` or `DSCODEX_PORT`)
@@ -87,10 +87,10 @@ repo and let it read `AGENTS.md`):
 
 1. Get the DeepSeek API key from the user **without printing it or committing it**; store it with
    `DEEPSEEK_API_KEY=sk-… node src/cli.mjs key set` (or the interactive hidden prompt). It lands in
-   `~/.codex/dscodex/config.json` (mode 0600) and survives logout/reboot.
+   `~/.codex/dscodex/config.json` (mode 0600; DPAPI-encrypted on Windows) and survives logout/reboot.
 2. `node src/cli.mjs install` — writes two marker-owned root keys and merges `🐳 V4 Flash` into
    the catalog; refuses to overwrite a user-owned `openai_base_url`.
-3. `node src/cli.mjs start`, then `node src/cli.mjs doctor` — all five checks, including the
+3. `node src/cli.mjs start`, then `node src/cli.mjs doctor` — all six checks, including the
    app-server bridge, must be `ok`.
 4. `npm test` — all tests pass.
 5. Have the user fully quit (`⌘Q`) and relaunch the ChatGPT app, start a **new** task, and pick
@@ -105,6 +105,7 @@ repo and let it read `AGENTS.md`):
 ```bash
 cd /path/to/DSCodex
 node src/cli.mjs key set   # hidden prompt; stored in ~/.codex/dscodex/config.json (0600)
+node src/cli.mjs proxy set http://127.0.0.1:10808   # optional: needed when chatgpt.com requires a proxy
 node src/cli.mjs install
 node src/cli.mjs start
 node src/cli.mjs doctor
@@ -116,7 +117,7 @@ Then quit and relaunch the ChatGPT desktop app, start a new task, and choose `�
 On Windows (PowerShell) the commands are identical; to pass the key via environment use
 `$env:DEEPSEEK_API_KEY="sk-…"; node src/cli.mjs key set`.
 
-Commands: `install`, `sync`, `key set|status|delete`, `start`, `serve`,
+Commands: `install`, `sync`, `key set|status|delete`, `proxy set|status|clear`, `start`, `serve`,
 `autostart enable|disable|status`, `status`, `doctor`, `stop`, `uninstall`.
 
 CLI note: `-m deepseek/deepseek-v4-flash` without the override may show `High`; add
@@ -151,16 +152,33 @@ CLI note: `-m deepseek/deepseek-v4-flash` without the override may show `High`; 
   placeholder is injected so DeepSeek can honestly say it cannot see the image. Descriptions are
   cached in router memory only; if the app-server re-encodes an image the data URL changes and the
   image is described again.
+- **Proxy.** The router must reach chatgpt.com itself: Node's fetch ignores system/proxy
+  environment variables by default, so DSCodex resolves a proxy on its own
+  (`DSCODEX_HTTPS_PROXY` / `DSCODEX_HTTP_PROXY` → lowercase/uppercase standard proxy variables
+  with Node's lowercase precedence → the value stored by `proxy set`) and re-execs itself with `--use-env-proxy` (Node
+  >= 24.5). GPT passthrough and GPT vision share the same path. `NO_PROXY` always includes
+  loopback addresses and `api.deepseek.com`, so DeepSeek remains direct; both uppercase and
+  lowercase proxy variables are set consistently for child processes. Proxy URLs may contain
+  credentials; they are redacted in CLI output and encrypted with DPAPI on Windows.
 - **WebSocket warning.** The catalog declares `prefer_websockets = false`; the router answers
   probes with `426`, and Codex falls back to HTTP/SSE. `codex doctor` may still show a warning;
   requests succeed.
 - **Voice, pets, plugins, skills, MCP.** All client-side; voice is driven by GPT-Live and never
   routes to DeepSeek.
-- **API key storage.** The key is stored in plaintext at `~/.codex/dscodex/config.json` (mode 0600,
-  directory 0700); it survives logout/reboot and is protected only by file permissions. If plaintext
-  at rest is unacceptable, skip `key set` and export `DEEPSEEK_API_KEY` per session instead (or
-  `launchctl setenv` on macOS). Resolution order at runtime: environment variable, then the stored
-  file, then the macOS login session; `key delete` plus a router restart removes it completely.
+- **API key storage.** The key is stored in `~/.codex/dscodex/config.json` (mode 0600, directory 0700);
+  Windows uses per-user DPAPI encryption and POSIX systems use the owner-only file. It survives
+  logout/reboot; legacy Windows plaintext keys migrate on the next install, start, or state write.
+  If persistent storage is unacceptable, skip `key set` and export
+  `DEEPSEEK_API_KEY` per session instead (or `launchctl setenv` on macOS). Resolution order at
+  runtime: environment variable, then the stored file, then the macOS login session; `key delete`
+  plus a router restart removes it completely.
+- **Loopback boundary.** `install` generates a 256-bit router token and adds it to
+  `openai_base_url`; `start` / `serve` reconcile the managed URL, port, and token, and `doctor`
+  verifies the exact binding. Requests without the token receive 404. The token is also required
+  for the authenticated shutdown handshake, and PID cleanup atomically claims the matching
+  instance state, so `stop` neither removes a replacement instance's state nor signals an
+  unverified PID. Request and decompressed-body limits protect the local process from accidental
+  or hostile memory spikes.
 - **Platform differences.** Routing, key storage, and catalog merging behave identically on every
   platform; the app-server bridge (picker-state memory for the desktop app) is macOS-only. Windows
   desktop apps spawn `CODEX_CLI_PATH` directly and CreateProcess cannot run a script shim (only an

@@ -1,11 +1,20 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { uninstall } from "../src/config.mjs";
 import { pathsFor } from "../src/constants.mjs";
-import { deleteStoredKey, readStoredKey, writeStoredKey } from "../src/keys.mjs";
+import {
+  deleteStoredKey,
+  ensureRouterToken,
+  migrateLegacyStoredKey,
+  readRouterToken,
+  readProxyUrl,
+  readStoredKey,
+  writeProxyUrl,
+  writeStoredKey,
+} from "../src/keys.mjs";
 
 test("stored key roundtrips with owner-only file permissions", () => {
   const keyFile = join(mkdtempSync(join(tmpdir(), "dscodex-key-")), "dscodex", "config.json");
@@ -54,4 +63,57 @@ test("deleteStoredKey removes the file and uninstall takes it too", () => {
   writeStoredKey(paths.keyFile, "sk-x");
   uninstall({ paths });
   assert.equal(existsSync(paths.keyFile), false);
+});
+
+test("proxy setting survives key writes and key deletion", () => {
+  const keyFile = join(mkdtempSync(join(tmpdir(), "dscodex-key-")), "dscodex", "config.json");
+  writeProxyUrl(keyFile, "  http://127.0.0.1:10808  ");
+  assert.equal(readProxyUrl(keyFile), "http://127.0.0.1:10808");
+  if (process.platform === "win32") {
+    assert.equal(readFileSync(keyFile, "utf8").includes("http://127.0.0.1:10808"), false);
+  }
+
+  writeStoredKey(keyFile, "sk-proxy-test");
+  assert.equal(readProxyUrl(keyFile), "http://127.0.0.1:10808");
+  assert.equal(readStoredKey(keyFile), "sk-proxy-test");
+
+  deleteStoredKey(keyFile);
+  assert.equal(existsSync(keyFile), true);
+  assert.equal(readProxyUrl(keyFile), "http://127.0.0.1:10808");
+
+  writeProxyUrl(keyFile, "");
+  assert.equal(readProxyUrl(keyFile), "");
+  assert.equal(existsSync(keyFile), false);
+});
+
+test("router token is stable, random-looking, and survives key deletion", () => {
+  const keyFile = join(mkdtempSync(join(tmpdir(), "dscodex-key-")), "dscodex", "config.json");
+  const first = ensureRouterToken(keyFile);
+  assert.match(first, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(ensureRouterToken(keyFile), first);
+  assert.equal(readRouterToken(keyFile), first);
+  writeStoredKey(keyFile, "sk-token-test");
+  deleteStoredKey(keyFile);
+  assert.equal(readRouterToken(keyFile), first);
+});
+
+test("migrates legacy Windows plaintext keys before serving", () => {
+  if (process.platform !== "win32") return;
+  const keyFile = join(mkdtempSync(join(tmpdir(), "dscodex-key-")), "dscodex", "config.json");
+  mkdirSync(join(keyFile, ".."), { recursive: true });
+  writeFileSync(keyFile, JSON.stringify({ deepseek_api_key: "legacy-key" }));
+  assert.equal(migrateLegacyStoredKey(keyFile), true);
+  assert.equal(readStoredKey(keyFile), "legacy-key");
+  assert.equal(readFileSync(keyFile, "utf8").includes("legacy-key"), false);
+});
+
+test("state writes migrate legacy Windows plaintext keys immediately", () => {
+  if (process.platform !== "win32") return;
+  const keyFile = join(mkdtempSync(join(tmpdir(), "dscodex-key-")), "dscodex", "config.json");
+  mkdirSync(join(keyFile, ".."), { recursive: true });
+  writeFileSync(keyFile, JSON.stringify({ deepseek_api_key: "legacy-write-key" }));
+
+  writeProxyUrl(keyFile, "http://127.0.0.1:10808");
+  assert.equal(readStoredKey(keyFile), "legacy-write-key");
+  assert.equal(readFileSync(keyFile, "utf8").includes("legacy-write-key"), false);
 });

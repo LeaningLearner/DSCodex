@@ -16,7 +16,7 @@
     "doctor": "node ./src/cli.mjs doctor"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24.5"
   },
   "license": "MIT"
 }

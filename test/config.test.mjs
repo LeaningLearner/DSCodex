@@ -4,8 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { buildCatalog } from "../src/catalog.mjs";
-import { buildInstalledConfig, install, stripManagedConfig, uninstall } from "../src/config.mjs";
+import {
+  buildInstalledConfig,
+  ensureManagedRouterBinding,
+  install,
+  managedRouterConfigMatches,
+  readManagedRouterToken,
+  stripManagedConfig,
+  uninstall,
+} from "../src/config.mjs";
 import { pathsFor } from "../src/constants.mjs";
+import { readRouterToken, readStoredKey } from "../src/keys.mjs";
 
 const TEMPLATE = {
   slug: "gpt-5.6-sol",
@@ -21,6 +30,8 @@ const TEMPLATE = {
   model_messages: { instructions_template: "You are Codex, an agent based on GPT-5." },
 };
 
+const ROUTER_TOKEN = "A".repeat(43);
+
 test("catalog adds one whale-labelled V4 Flash entry with honest reasoning levels", () => {
   const catalog = buildCatalog({ models: [TEMPLATE] });
   const model = catalog.models[0];
@@ -35,11 +46,82 @@ test("catalog adds one whale-labelled V4 Flash entry with honest reasoning level
 
 test("config injection is root-correct, reversible, and preserves user config", () => {
   const original = 'personality = "pragmatic"\n\n[features]\nmulti_agent = true\n\n[desktop]\ntheme = "light"\n';
-  const installed = buildInstalledConfig(original, { port: 10110, catalogPath: "/tmp/models.json" });
+  const installed = buildInstalledConfig(original, { port: 10110, catalogPath: "/tmp/models.json", routerToken: ROUTER_TOKEN });
   assert.ok(installed.indexOf("openai_base_url") < installed.indexOf("[features]"));
   assert.match(installed, /model_catalog_json = "\/tmp\/models\.json"/);
   assert.match(installed, /enabled-reasoning-efforts = \[.*"max".*\]/);
+  assert.equal(readManagedRouterToken(installed), ROUTER_TOKEN);
+  assert.equal(managedRouterConfigMatches(installed, {
+    port: 10110,
+    catalogPath: "/tmp/models.json",
+    routerToken: ROUTER_TOKEN,
+  }), true);
   assert.equal(stripManagedConfig(installed), original);
+});
+
+test("managed router binding upgrades a legacy URL and preserves user config", () => {
+  const codexHome = mkdtempSync(join(tmpdir(), "dscodex-binding-"));
+  const paths = pathsFor(codexHome);
+  const original = [
+    'personality = "pragmatic"',
+    "# DSCodex managed; remove with `dscodex uninstall`",
+    'openai_base_url = "http://127.0.0.1:10110/v1"',
+    `model_catalog_json = ${JSON.stringify(paths.catalog)}`,
+    "",
+    "[features]",
+    "multi_agent = true",
+    "",
+  ].join("\n");
+  writeFileSync(paths.config, original);
+
+  const result = ensureManagedRouterBinding({ paths, port: 10110 });
+  const updated = readFileSync(paths.config, "utf8");
+  assert.equal(result.updated, true);
+  assert.equal(readRouterToken(paths.keyFile), result.routerToken);
+  assert.equal(readManagedRouterToken(updated), result.routerToken);
+  assert.equal(managedRouterConfigMatches(updated, {
+    port: 10110,
+    catalogPath: paths.catalog,
+    routerToken: result.routerToken,
+  }), true);
+  assert.match(updated, /personality = "pragmatic"/);
+  assert.match(updated, /\[features\]\nmulti_agent = true/);
+});
+
+test("managed router binding refuses a running legacy router before mutation", () => {
+  const codexHome = mkdtempSync(join(tmpdir(), "dscodex-binding-legacy-router-"));
+  const paths = pathsFor(codexHome);
+  const original = [
+    "# DSCodex managed; remove with `dscodex uninstall`",
+    'openai_base_url = "http://127.0.0.1:10110/v1"',
+    `model_catalog_json = ${JSON.stringify(paths.catalog)}`,
+    "",
+  ].join("\n");
+  writeFileSync(paths.config, original);
+  mkdirSync(paths.stateDir, { recursive: true });
+  writeFileSync(paths.pid, `${JSON.stringify({ pid: process.pid, port: 10110 })}\n`);
+
+  assert.throws(
+    () => ensureManagedRouterBinding({ paths, port: 10110 }),
+    /older or untrusted DSCodex state is still running/,
+  );
+  assert.equal(readFileSync(paths.config, "utf8"), original);
+  assert.equal(existsSync(paths.keyFile), false);
+});
+
+test("managed router binding adopts the installed URL token when state is missing", () => {
+  const codexHome = mkdtempSync(join(tmpdir(), "dscodex-binding-"));
+  const paths = pathsFor(codexHome);
+  writeFileSync(paths.config, `${buildInstalledConfig("", {
+    port: 10110,
+    catalogPath: paths.catalog,
+    routerToken: ROUTER_TOKEN,
+  })}\n`);
+
+  const result = ensureManagedRouterBinding({ paths, port: 10110 });
+  assert.equal(result.updated, false);
+  assert.equal(result.routerToken, ROUTER_TOKEN);
+  assert.equal(readRouterToken(paths.keyFile), ROUTER_TOKEN);
 });
 
 test("install and uninstall touch only DSCodex-owned files and lines", () => {
@@ -51,6 +133,9 @@ test("install and uninstall touch only DSCodex-owned files and lines", () => {
 
   const result = install({ paths, port: 10110 });
   assert.equal(result.catalog.models.length, 2);
+  assert.match(result.routerToken, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(readRouterToken(paths.keyFile), result.routerToken);
+  assert.match(readFileSync(paths.config, "utf8"), new RegExp(`127\\.0\\.0\\.1:10110/${result.routerToken}/v1`));
   assert.equal(existsSync(paths.backup), true);
   assert.equal(existsSync(paths.catalog), true);
   assert.match(readFileSync(paths.config, "utf8"), /DSCodex managed/);
@@ -68,7 +153,74 @@ test("install and uninstall touch only DSCodex-owned files and lines", () => {
 
 test("refuses to replace a user-owned openai_base_url", () => {
   assert.throws(
-    () => buildInstalledConfig('openai_base_url = "https://example.test/v1"\n', { port: 10110, catalogPath: "/tmp/models.json" }),
+    () => buildInstalledConfig('openai_base_url = "https://example.test/v1"\n', { port: 10110, catalogPath: "/tmp/models.json", routerToken: ROUTER_TOKEN }),
     /user-owned root key/,
   );
+});
+
+test("does not install an unauthenticated loopback base URL", () => {
+  assert.throws(
+    () => buildInstalledConfig("", { port: 10110, catalogPath: "/tmp/models.json" }),
+    /requires a router token/,
+  );
+});
+
+test("install validates router state before changing config or catalog", () => {
+  const codexHome = mkdtempSync(join(tmpdir(), "dscodex-install-failure-"));
+  const paths = pathsFor(codexHome);
+  const original = "[features]\nmulti_agent = true\n";
+  const sensitiveCorruptState = "sk-FAKE-REVIEW-SECRET";
+  writeFileSync(paths.config, original);
+  writeFileSync(paths.cache, JSON.stringify({ models: [TEMPLATE] }));
+  mkdirSync(paths.stateDir, { recursive: true });
+  writeFileSync(paths.keyFile, sensitiveCorruptState);
+
+  assert.throws(
+    () => install({ paths, port: 10110 }),
+    (error) => {
+      assert.match(error.message, /Could not read or parse DSCodex config/);
+      assert.doesNotMatch(error.message, /FAKE-REVIEW-SECRET/);
+      return true;
+    },
+  );
+  assert.equal(readFileSync(paths.config, "utf8"), original);
+  assert.equal(existsSync(paths.catalog), false);
+  assert.equal(readFileSync(paths.keyFile, "utf8"), sensitiveCorruptState);
+});
+
+test("install refuses a running legacy router before publishing authenticated state", () => {
+  const codexHome = mkdtempSync(join(tmpdir(), "dscodex-install-legacy-router-"));
+  const paths = pathsFor(codexHome);
+  const original = [
+    "# DSCodex managed; remove with `dscodex uninstall`",
+    'openai_base_url = "http://127.0.0.1:10110/v1"',
+    `model_catalog_json = ${JSON.stringify(paths.catalog)}`,
+    "",
+  ].join("\n");
+  writeFileSync(paths.config, original);
+  writeFileSync(paths.cache, JSON.stringify({ models: [TEMPLATE] }));
+  mkdirSync(paths.stateDir, { recursive: true });
+  writeFileSync(paths.pid, `${JSON.stringify({ pid: process.pid, port: 10110 })}\n`);
+
+  assert.throws(
+    () => install({ paths, port: 10110 }),
+    /older or untrusted DSCodex state is still running/,
+  );
+  assert.equal(readFileSync(paths.config, "utf8"), original);
+  assert.equal(existsSync(paths.catalog), false);
+  assert.equal(existsSync(paths.keyFile), false);
+  assert.equal(existsSync(paths.backup), false);
+});
+
+test("install migrates a legacy Windows plaintext key before returning", () => {
+  if (process.platform !== "win32") return;
+  const codexHome = mkdtempSync(join(tmpdir(), "dscodex-install-migration-"));
+  const paths = pathsFor(codexHome);
+  mkdirSync(paths.stateDir, { recursive: true });
+  writeFileSync(paths.keyFile, `${JSON.stringify({ deepseek_api_key: "legacy-install-key" })}\n`);
+  writeFileSync(paths.cache, JSON.stringify({ models: [TEMPLATE] }));
+
+  install({ paths, port: 10110 });
+  assert.equal(readStoredKey(paths.keyFile), "legacy-install-key");
+  assert.equal(readFileSync(paths.keyFile, "utf8").includes("legacy-install-key"), false);
 });

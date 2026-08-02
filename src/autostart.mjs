@@ -82,19 +82,42 @@ WantedBy=default.target
 `;
 }
 
-// The task runs wscript.exe on this one-liner so no console window flashes at
-// logon; cmd routes stdout/stderr into the regular server.log.
-export function buildWindowsVbs({ nodePath, cliPath, port, logPath, homeDir = homedir() }) {
-  // wscript reads .vbs files as ANSI (GBK on zh-CN systems), so a literal log
-  // path containing a non-ASCII user name becomes mojibake and cmd cannot open
-  // it. Redirect through %USERPROFILE% (expanded by cmd at runtime) instead.
-  let log = logPath;
-  const homePrefix = homeDir.replace(/[\\/]+$/, "");
-  const lowerLog = logPath.toLowerCase();
+function psQuote(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function winQuote(value) {
+  return `"${String(value).replaceAll('"', '\\"')}"`;
+}
+
+function powershellPath() {
+  return join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+}
+
+function psPath(value, homeDir) {
+  const path = String(value);
+  const homePrefix = String(homeDir).replace(/[\\/]+$/, "");
+  const lowerPath = path.toLowerCase();
   const lowerHome = homePrefix.toLowerCase();
-  if (lowerLog.startsWith(`${lowerHome}\\`) || lowerLog.startsWith(`${lowerHome}/`)) {
-    log = `%USERPROFILE%${logPath.slice(homePrefix.length)}`;
+  if (homePrefix && lowerPath === lowerHome) return "$env:USERPROFILE";
+  if (homePrefix && (lowerPath.startsWith(`${lowerHome}\\`) || lowerPath.startsWith(`${lowerHome}/`))) {
+    // wscript reads generated .vbs files through the active ANSI code page.
+    // Keep non-ASCII user names out of the VBS source and resolve them at run time.
+    return `($env:USERPROFILE + ${psQuote(path.slice(homePrefix.length))})`;
   }
-  const cmd = `cmd /c ""${nodePath}" "${cliPath}" serve --port ${port} >> "${log}" 2>&1"`;
-  return `CreateObject("Wscript.Shell").Run "${cmd.replaceAll('"', '""')}", 0, False\r\n`;
+  return psQuote(path);
+}
+
+// The task runs wscript.exe on this one-liner so no console window flashes at
+// logon. It deliberately avoids `cmd /c`: a cmd string would need escaping for
+// `&`, `^`, `|`, `<`, `>` etc., so paths (which may contain those characters)
+// are passed to PowerShell as single-quoted arguments instead and the router
+// log is appended with PowerShell's `*>>`.
+export function buildWindowsVbs({ nodePath, cliPath, port, logPath, homeDir = homedir() }) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid port: ${port}`);
+  }
+  const script = `$ErrorActionPreference='Stop'; & ${psPath(nodePath, homeDir)} ${psPath(cliPath, homeDir)} serve --port ${port} *>> ${psPath(logPath, homeDir)}`;
+  const commandLine = `${winQuote(powershellPath())} -NoProfile -NonInteractive -WindowStyle Hidden -Command ${winQuote(script)}`;
+  return `CreateObject("Wscript.Shell").Run "${commandLine.replaceAll('"', '""')}", 0, False\r\n`;
 }
