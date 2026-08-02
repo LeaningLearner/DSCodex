@@ -364,8 +364,22 @@ async function serve(port) {
       stdio: "inherit",
       windowsHide: true,
     });
+    const forwardedSignals = new Map();
+    for (const signal of ["SIGINT", "SIGTERM"]) {
+      const handler = () => child.kill(signal);
+      forwardedSignals.set(signal, handler);
+      process.once(signal, handler);
+    }
+    child.once("error", (error) => {
+      console.error(`${ts()} dscodex: failed to start proxy re-exec: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    });
     child.once("exit", (code, signal) => {
-      if (signal) process.kill(process.pid, signal);
+      if (signal) {
+        const handler = forwardedSignals.get(signal);
+        if (handler) process.removeListener(signal, handler);
+        process.kill(process.pid, signal);
+      }
       else process.exit(code ?? 1);
     });
     return;

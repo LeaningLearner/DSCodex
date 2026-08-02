@@ -219,6 +219,43 @@ test("serve owns its pid file across start and graceful shutdown", { timeout: 20
   }
 });
 
+test("proxy re-exec forwards termination to the actual router process", {
+  timeout: 20_000,
+  skip: process.platform === "win32" ? "Windows child.kill does not deliver catchable signals" : false,
+}, async () => {
+  const codexHome = mkdtempSync(join(tmpdir(), "dscodex-proxy-reexec-"));
+  const port = 20_000 + Math.floor(Math.random() * 20_000);
+  const paths = prepareRouterHome(codexHome, port);
+  const env = {
+    ...routerEnv(codexHome),
+    DSCODEX_HTTP_PROXY: "http://127.0.0.1:1",
+  };
+  const parent = spawn(process.execPath, [CLI, "serve", "--port", String(port)], {
+    env,
+    stdio: "ignore",
+  });
+  const parentExited = once(parent, "exit");
+  let routerPid;
+  try {
+    await waitForFile(paths.pid, "proxy re-exec router pid file");
+    routerPid = JSON.parse(readFileSync(paths.pid, "utf8")).pid;
+    assert.notEqual(routerPid, parent.pid);
+
+    parent.kill("SIGTERM");
+    const [code, signal] = await parentExited;
+    assert.equal(code, 0);
+    assert.equal(signal, null);
+    await waitForPortToClose(port);
+    assert.equal(existsSync(paths.pid), false);
+  } finally {
+    try { parent.kill("SIGKILL"); } catch {}
+    if (routerPid) {
+      try { process.kill(routerPid, "SIGKILL"); } catch {}
+    }
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
 test("loopback status and shutdown bypass an enabled environment proxy", { timeout: 20_000 }, async () => {
   const codexHome = mkdtempSync(join(tmpdir(), "dscodex-control-direct-"));
   const port = 20_000 + Math.floor(Math.random() * 20_000);
