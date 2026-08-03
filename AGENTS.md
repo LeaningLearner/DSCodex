@@ -6,13 +6,13 @@ The non-negotiable details:
 
 1. Never print or commit the DeepSeek API key. Persist it with `node src/cli.mjs key set`
    (`DEEPSEEK_API_KEY` env or the hidden prompt); it is stored at
-   `~/.codex/dscodex/config.json` with mode 0600 and survives logout/reboot. Resolution order at
+   `~/.codex/dscodex/config.json` with mode 0600 (DPAPI-encrypted on Windows) and survives logout/reboot. Resolution order at
    runtime: `DEEPSEEK_API_KEY` env (one-off override), then the stored file, then the legacy macOS
    login-session value. Never store the key in `~/.codex/config.toml`; `uninstall` deletes the
    stored key file.
 2. Run `node src/cli.mjs install`, then `node src/cli.mjs start`, then
-   `node src/cli.mjs doctor`. Doctor must report `ok` for config, catalog, proxy, key, and the
-   app-server bridge. Install must refuse a user-owned `CODEX_CLI_PATH`; it may only install the
+   `node src/cli.mjs doctor`. Doctor must report `ok` for config, catalog, router token, proxy, key,
+   and the app-server bridge. Install must refuse a user-owned `CODEX_CLI_PATH`; it may only install the
    DSCodex wrapper when that login-session variable is absent or already DSCodex-owned. The
    variable must point at the generated shim `~/.codex/dscodex/codex-cli-bridge.sh`, never
    directly at `src/codex-wrapper.mjs`: GUI apps get a bare launchd PATH without Homebrew, so a
@@ -48,7 +48,24 @@ The non-negotiable details:
    macOS, systemd user service `dscodex.service` on Linux, Task Scheduler `DSCodex` plus a hidden
    wscript shim on Windows). The generated plist/unit/VBS must never embed the DeepSeek API key —
    the router resolves it from the stored key file at runtime. KeepAlive/Restart only cover
-   crashes: `stop` sends SIGTERM, the router exits 0 gracefully, and it must stay down. The
+    crashes: `stop` uses the authenticated shutdown endpoint, the router exits 0 gracefully, and it must stay down. The
    `serve` process owns `~/.codex/dscodex/server.pid` no matter who launched it, so `stop` works
    for autostarted instances too. `uninstall` must disable autostart and delete the generated
    artifacts.
+10. The router must reach chatgpt.com for GPT passthrough and GPT vision. Node's fetch ignores
+    proxy environment variables by default, so DSCodex resolves a proxy itself — order:
+    `DSCODEX_HTTPS_PROXY` / `DSCODEX_HTTP_PROXY`, then standard proxy variables (Node gives
+    lowercase names precedence), then the
+    stored `proxy_url` written by `node src/cli.mjs proxy set <url>` in
+    `~/.codex/dscodex/config.json` — and re-execs itself with Node's `--use-env-proxy`
+    (requires Node >= 24.5; uppercase and lowercase proxy variables are synchronized, and
+    `NO_PROXY` always includes loopback plus `api.deepseek.com`). Proxy credentials are redacted
+    in CLI output and DPAPI-protected on Windows; the proxy URL must never be confused with the
+    DeepSeek key, which stays DPAPI/0600-protected and is never printed or committed.
+11. `install` generates a 256-bit router token and writes it into the managed `openai_base_url`;
+    `start` / `serve` must reconcile that marker-owned URL with the persisted token and selected
+    port, and `doctor` must verify the exact binding. The proxy must reject requests without that
+    path token. `serve` owns a 0600 pid-state file with a per-instance shutdown token. `stop` may
+    only use the authenticated shutdown endpoint and must atomically preserve replacement-instance
+    state; it must never terminate an unverified or recycled PID. Cap both compressed request bytes
+    and decompressed request bytes before parsing JSON.

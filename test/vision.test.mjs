@@ -4,6 +4,12 @@ import test from "node:test";
 import { once } from "node:events";
 import { createProxyServer } from "../src/proxy.mjs";
 
+const ROUTER_TOKEN = "A".repeat(43);
+
+function route(proxyUrl, path = "/v1/responses") {
+  return `${proxyUrl}/${ROUTER_TOKEN}${path}`;
+}
+
 const IMAGE_A = `data:image/png;base64,${"A".repeat(64)}`;
 const IMAGE_B = `data:image/png;base64,${"B".repeat(64)}`;
 
@@ -115,12 +121,13 @@ test("rewrites DeepSeek-bound images into GPT descriptions, concurrent and cache
     deepSeekBaseUrl: deepSeekUrl,
     chatGptBaseUrl: chatGptUrl,
     logger: { info() {}, error() {} },
+    routerToken: ROUTER_TOKEN,
   });
   const proxyUrl = await listen(proxy);
   t.after(async () => { await close(proxy); await close(chatGpt); await close(deepSeek); });
 
   const startedAt = Date.now();
-  const response = await fetch(`${proxyUrl}/v1/responses`, {
+  const response = await fetch(route(proxyUrl), {
     method: "POST",
     headers: { "content-type": "application/json", authorization: "Bearer oauth-token" },
     body: JSON.stringify(deepSeekRequest([IMAGE_A, IMAGE_B, IMAGE_A])),
@@ -144,7 +151,7 @@ test("rewrites DeepSeek-bound images into GPT descriptions, concurrent and cache
   assert.ok(texts.includes("what do you see"));
 
   // A later request with the same image hits the cache, not the vision API.
-  const cached = await fetch(`${proxyUrl}/v1/responses`, {
+  const cached = await fetch(route(proxyUrl), {
     method: "POST",
     headers: { "content-type": "application/json", authorization: "Bearer oauth-token" },
     body: JSON.stringify(deepSeekRequest([IMAGE_A])),
@@ -162,6 +169,7 @@ test("leaves native GPT passthrough bodies untouched", async (t) => {
     deepSeekKey: "test-key",
     chatGptBaseUrl: chatGptUrl,
     logger: { info() {}, error() {} },
+    routerToken: ROUTER_TOKEN,
   });
   const proxyUrl = await listen(proxy);
   t.after(async () => { await close(proxy); await close(chatGpt); });
@@ -170,7 +178,7 @@ test("leaves native GPT passthrough bodies untouched", async (t) => {
     model: "gpt-5.6-sol",
     input: [{ type: "message", role: "user", content: [{ type: "input_image", image_url: IMAGE_A }] }],
   };
-  const response = await fetch(`${proxyUrl}/v1/responses`, {
+  const response = await fetch(route(proxyUrl), {
     method: "POST",
     headers: { "content-type": "application/json", authorization: "Bearer oauth-token" },
     body: JSON.stringify(original),
@@ -192,11 +200,12 @@ test("marks images with a placeholder when the vision call fails", async (t) => 
     deepSeekBaseUrl: deepSeekUrl,
     chatGptBaseUrl: chatGptUrl,
     logger: { info() {}, error() {} },
+    routerToken: ROUTER_TOKEN,
   });
   const proxyUrl = await listen(proxy);
   t.after(async () => { await close(proxy); await close(chatGpt); await close(deepSeek); });
 
-  const response = await fetch(`${proxyUrl}/v1/responses`, {
+  const response = await fetch(route(proxyUrl), {
     method: "POST",
     headers: { "content-type": "application/json", authorization: "Bearer oauth-token" },
     body: JSON.stringify(deepSeekRequest([IMAGE_A])),
@@ -206,7 +215,7 @@ test("marks images with a placeholder when the vision call fails", async (t) => 
   assert.ok(collectText(deepSeekReceived[0]).some((text) => text.includes("could not analyze")));
 });
 
-test("skips the vision rewrite without ChatGPT OAuth headers", async (t) => {
+test("passes DeepSeek-bound images through when OAuth credentials are absent", async (t) => {
   const chatGptCalls = [];
   const deepSeekReceived = [];
   const chatGpt = createFakeChatGpt(chatGptCalls);
@@ -218,16 +227,18 @@ test("skips the vision rewrite without ChatGPT OAuth headers", async (t) => {
     deepSeekBaseUrl: deepSeekUrl,
     chatGptBaseUrl: chatGptUrl,
     logger: { info() {}, error() {} },
+    routerToken: ROUTER_TOKEN,
   });
   const proxyUrl = await listen(proxy);
   t.after(async () => { await close(proxy); await close(chatGpt); await close(deepSeek); });
 
-  const response = await fetch(`${proxyUrl}/v1/responses`, {
+  const response = await fetch(route(proxyUrl), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(deepSeekRequest([IMAGE_A])),
   });
   assert.equal(response.status, 200);
   assert.equal(chatGptCalls.length, 0);
+  assert.equal(deepSeekReceived.length, 1);
   assert.equal(countImages(deepSeekReceived[0]), 1);
 });

@@ -8,8 +8,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
-import { MANAGED_MARKER } from "./constants.mjs";
-import { syncCatalog } from "./catalog.mjs";
+import { HOST, MANAGED_MARKER } from "./constants.mjs";
+import { buildCatalog, writeCatalog } from "./catalog.mjs";
+import {
+  createRouterToken,
+  ensureRouterToken,
+  readRouterConfig,
+  readRouterToken,
+} from "./keys.mjs";
 
 const ROOT_KEYS = new Set(["openai_base_url", "model_catalog_json"]);
 const DESKTOP_KEY = "enabled-reasoning-efforts";
@@ -26,6 +32,127 @@ function firstTableIndex(lines) {
 
 function quoteToml(value) {
   return JSON.stringify(value);
+}
+
+function validRouterToken(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
+}
+
+function authenticatedPidState(state) {
+  return Number.isInteger(state?.pid) && state.pid >= 1
+    && Number.isInteger(state.port) && state.port >= 1 && state.port <= 65535
+    && validRouterToken(state.routerToken)
+    && validRouterToken(state.shutdownToken)
+    && typeof state.instanceId === "string"
+    && new RegExp(`^${state.pid}-\\d+-[0-9a-f]{16}$`).test(state.instanceId);
+}
+
+function processAppearsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    if (error?.code === "EPERM") return true;
+    throw error;
+  }
+}
+
+function assertNoActiveLegacyRouter(paths) {
+  if (!existsSync(paths.pid)) return;
+  let state;
+  try {
+    state = JSON.parse(readFileSync(paths.pid, "utf8"));
+  } catch {
+    throw new Error(
+      `Invalid DSCodex pid state at ${paths.pid}; verify no router is running and remove the file before installing`,
+    );
+  }
+  if (authenticatedPidState(state)) return;
+  if (!Number.isInteger(state?.pid) || state.pid < 1
+    || !Number.isInteger(state.port) || state.port < 1 || state.port > 65535) {
+    throw new Error(
+      `Untrusted DSCodex pid state at ${paths.pid}; verify no router is running and remove the file before installing`,
+    );
+  }
+  if (!processAppearsAlive(state.pid)) return;
+  throw new Error(
+    `A router from an older or untrusted DSCodex state is still running `
+      + `(PID ${state.pid}, port ${state.port}); stop it with the previous DSCodex version before installing`,
+  );
+}
+
+function routerBaseUrl({ port, routerToken }) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid port: ${port}`);
+  }
+  if (!validRouterToken(routerToken)) throw new Error("DSCodex install requires a router token");
+  return `http://${HOST}:${port}/${routerToken}/v1`;
+}
+
+function managedRootLines(options) {
+  return [
+    MANAGED_MARKER,
+    `openai_base_url = ${quoteToml(routerBaseUrl(options))}`,
+    `model_catalog_json = ${quoteToml(options.catalogPath)}`,
+  ];
+}
+
+function assignedString(line) {
+  const equals = line.indexOf("=");
+  if (equals === -1) return "";
+  try {
+    const value = JSON.parse(line.slice(equals + 1).trim());
+    return typeof value === "string" ? value : "";
+  } catch {
+    return "";
+  }
+}
+
+function managedRootBlock(content) {
+  const lines = content.replaceAll("\r\n", "\n").split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].trim() !== MANAGED_MARKER) continue;
+    let next = index + 1;
+    if (!ROOT_KEYS.has(keyOf(lines[next] ?? ""))) continue;
+    const values = {};
+    while (next < lines.length && ROOT_KEYS.has(keyOf(lines[next]))) {
+      values[keyOf(lines[next])] = assignedString(lines[next]);
+      next += 1;
+    }
+    return { lines, start: index, end: next, values };
+  }
+  return null;
+}
+
+export function readManagedRouterToken(content) {
+  const baseUrl = managedRootBlock(content)?.values.openai_base_url;
+  if (!baseUrl) return "";
+  try {
+    const parsed = new URL(baseUrl);
+    const match = /^\/([A-Za-z0-9_-]{43})\/v1\/?$/.exec(parsed.pathname);
+    if (parsed.protocol !== "http:" || parsed.hostname !== HOST
+      || parsed.username || parsed.password || parsed.search || parsed.hash || !match) return "";
+    return match[1];
+  } catch {
+    return "";
+  }
+}
+
+export function managedRouterConfigMatches(content, options) {
+  const block = managedRootBlock(content);
+  if (!block) return false;
+  return block.values.openai_base_url === routerBaseUrl(options)
+    && block.values.model_catalog_json === options.catalogPath;
+}
+
+function rewriteManagedRouterConfig(content, options) {
+  const block = managedRootBlock(content);
+  if (!block) {
+    throw new Error("DSCodex managed router config is missing; run `node src/cli.mjs install`");
+  }
+  block.lines.splice(block.start, block.end - block.start, ...managedRootLines(options));
+  return block.lines.join("\n");
 }
 
 export function stripManagedConfig(content) {
@@ -58,15 +185,10 @@ function assertNoRootConflict(content) {
   }
 }
 
-function injectRoot(content, { port, catalogPath }) {
+function injectRoot(content, { port, catalogPath, routerToken }) {
   const lines = content.split("\n");
   const insertAt = firstTableIndex(lines);
-  const block = [
-    MANAGED_MARKER,
-    `openai_base_url = "http://127.0.0.1:${port}/v1"`,
-    `model_catalog_json = ${quoteToml(catalogPath)}`,
-  ];
-  lines.splice(insertAt, 0, ...block);
+  lines.splice(insertAt, 0, ...managedRootLines({ port, catalogPath, routerToken }));
   return lines.join("\n");
 }
 
@@ -103,16 +225,58 @@ function atomicWrite(path, content, mode = 0o600) {
   renameSync(temporary, path);
 }
 
+export function ensureManagedRouterBinding({ paths, port }) {
+  // Guard every runtime entry point (start/serve/autostart) before it can
+  // publish an authenticated URL while a pre-authentication router still owns
+  // the port and legacy pid state. `install` performs the same guard separately.
+  assertNoActiveLegacyRouter(paths);
+  const original = existsSync(paths.config) ? readFileSync(paths.config, "utf8") : "";
+  if (!managedRootBlock(original)) {
+    throw new Error("DSCodex managed router config is missing; run `node src/cli.mjs install`");
+  }
+  const routerToken = ensureRouterToken(paths.keyFile, readManagedRouterToken(original));
+  const options = { port, catalogPath: paths.catalog, routerToken };
+  const updated = !managedRouterConfigMatches(original, options);
+  if (updated) {
+    const configured = rewriteManagedRouterConfig(original, options);
+    atomicWrite(paths.config, configured.endsWith("\n") ? configured : `${configured}\n`);
+  }
+  return { routerToken, updated };
+}
+
 export function install({ paths, port }) {
+  // A pre-authentication router cannot understand the new tokenized URL, and
+  // its legacy pid file cannot support authenticated shutdown. Refuse the
+  // upgrade before changing config or generated state; never signal that PID.
+  assertNoActiveLegacyRouter(paths);
   mkdirSync(dirname(paths.config), { recursive: true });
   const original = existsSync(paths.config) ? readFileSync(paths.config, "utf8") : "";
-  const configured = buildInstalledConfig(original, { port, catalogPath: paths.catalog });
-  const catalog = syncCatalog({ cachePath: paths.cache, catalogPath: paths.catalog });
+  // Validate every input before publishing any generated file. In particular,
+  // a corrupt state file must not leave config.toml pointing at an unpersisted token.
+  readRouterConfig(paths.keyFile, { strict: true });
+  const candidateToken = readRouterToken(paths.keyFile)
+    || readManagedRouterToken(original)
+    || createRouterToken();
+  let configured = buildInstalledConfig(original, {
+    port,
+    catalogPath: paths.catalog,
+    routerToken: candidateToken,
+  });
+  const cache = JSON.parse(readFileSync(paths.cache, "utf8"));
+  const catalog = buildCatalog(cache);
   if (!existsSync(paths.backup) && existsSync(paths.config)) {
     copyFileSync(paths.config, paths.backup);
   }
+
+  // Persist the credential used by the loopback router before exposing it in
+  // config.toml. A later failure can leave an unused token, never a broken URL.
+  const routerToken = ensureRouterToken(paths.keyFile, candidateToken);
+  if (routerToken !== candidateToken) {
+    configured = buildInstalledConfig(original, { port, catalogPath: paths.catalog, routerToken });
+  }
+  writeCatalog({ catalogPath: paths.catalog, catalog });
   atomicWrite(paths.config, configured.endsWith("\n") ? configured : `${configured}\n`);
-  return { catalog, configPath: paths.config, catalogPath: paths.catalog };
+  return { catalog, configPath: paths.config, catalogPath: paths.catalog, routerToken };
 }
 
 export function uninstall({ paths }) {

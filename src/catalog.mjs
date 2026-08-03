@@ -78,11 +78,14 @@ export function buildCatalog(cache) {
   };
 }
 
-export function syncCatalog({ cachePath, catalogPath }) {
-  const cache = JSON.parse(readFileSync(cachePath, "utf8"));
-  const catalog = buildCatalog(cache);
+export function writeCatalog({ catalogPath, catalog }) {
   const temporary = `${catalogPath}.dscodex-tmp-${process.pid}`;
   writeFileSync(temporary, `${JSON.stringify(catalog, null, 2)}\n`, { mode: 0o600 });
   renameSync(temporary, catalogPath);
   return catalog;
+}
+
+export function syncCatalog({ cachePath, catalogPath }) {
+  const cache = JSON.parse(readFileSync(cachePath, "utf8"));
+  return writeCatalog({ catalogPath, catalog: buildCatalog(cache) });
 }
