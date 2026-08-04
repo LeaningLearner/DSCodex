@@ -108,12 +108,14 @@ CLI 注意：`-m deepseek/deepseek-v4-flash` 不带覆盖参数时可能显示 `
 | Codex CLI / IDE 扩展 | 支持 |
 | Windows 原生（Codex CLI / IDE 扩展） | 支持；app-server bridge 为 macOS 专属，见下文 |
 | DeepSeek 多轮工具调用 | 支持，走原生 Responses API |
+| Codex 自动 / 手动上下文压缩 | 支持；路由将 `compaction_trigger` 转成 DeepSeek 摘要，并加密封装为 Codex 压缩项 |
 | GPT / Codex OAuth 模型 | 支持，流量原样旁路 |
 | chatgpt.com 网页版 | 不支持；DSCodex 接入的是本地 Codex 运行时 |
 
 ## 已知行为与边界
 
 - **用量统计。** Codex App「Profile」的用量统计是只读的，无法计入 DeepSeek 用量——已实测。
+- **上下文压缩。** DeepSeek Responses API 不会原生返回 Codex remote compaction v2 要求的 `compaction` 输出项。DSCodex 会拦截 `compaction_trigger`，让当前 V4 Flash 生成交接摘要，再用本地路由令牌派生的 AES-256-GCM 密钥加密封装；后续 DeepSeek 请求会在路由内解密并还原为摘要上下文。摘要不会改走 GPT，也不会以明文写进会话 JSONL。
 - **GPT 识图。** 识图借用请求自带的 ChatGPT OAuth 头，描述质量取决于 GPT 模型（默认 `gpt-5.6-sol`，`DSCODEX_VISION_MODEL` 可换）。无 OAuth 头（纯 API key 场景）时图片原样透传；识图失败时注入明确占位文本，DeepSeek 会如实说看不到。描述缓存在路由进程内存中，重启失效；app-server 若重新编码图片，data URL 变化会导致重新描述。
 - **代理。** 路由器必须能访问 chatgpt.com：Node 的 fetch 默认忽略系统/环境代理，因此 DSCodex 会自行解析代理（`DSCODEX_HTTPS_PROXY` / `DSCODEX_HTTP_PROXY` → 按 Node 规则优先小写的标准代理变量 → `proxy set` 存储值），并以 `--use-env-proxy` 重启自身（Node ≥24.5）。GPT 转发与 GPT 识图同链路生效；`NO_PROXY` 默认含回环地址和 `api.deepseek.com`，DeepSeek 保持直连。大小写代理变量会同步设置，带用户名/密码的代理 URL 会在 CLI 输出中脱敏，Windows 上用 DPAPI 加密保存。
 - **WebSocket 警告。** 目录声明 `prefer_websockets = false`，路由对探测回 `426`，Codex 回退 HTTP/SSE；`codex doctor` 可能仍显示警告，但请求正常。

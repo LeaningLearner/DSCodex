@@ -88,6 +88,93 @@ test("routes V4 Flash to native DeepSeek /responses and preserves SSE", async (t
   assert.deepEqual(observed.body.input[1], { type: "function_call_output", call_id: "call_7", output: "done" });
 });
 
+test("adapts Codex remote compaction v2 to a DeepSeek summary and restores it on replay", async (t) => {
+  const observed = [];
+  const summary = "The user approved the router fix; tests and a restart are still pending.";
+  const upstream = http.createServer(async (request, response) => {
+    observed.push(JSON.parse(await bodyOf(request)));
+    if (observed.length === 1) {
+      const item = {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: summary }],
+      };
+      const stream = [
+        `event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", item })}\n\n`,
+        `event: response.completed\ndata: ${JSON.stringify({
+          type: "response.completed",
+          response: {
+            id: "resp_upstream",
+            output: [item],
+            usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 },
+          },
+        })}\n\n`,
+      ].join("");
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.end(stream);
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("{}");
+  });
+  const upstreamUrl = await listen(upstream);
+  const proxy = createProxyServer({
+    deepSeekKey: "test-key",
+    deepSeekBaseUrl: upstreamUrl,
+    logger: { info() {}, error() {} },
+    routerToken: ROUTER_TOKEN,
+  });
+  const proxyUrl = await listen(proxy);
+  t.after(async () => { await close(proxy); await close(upstream); });
+
+  const compactResponse = await fetch(route(proxyUrl), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "deepseek/deepseek-v4-flash",
+      stream: true,
+      tools: [{ type: "function", name: "shell" }],
+      parallel_tool_calls: true,
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "Fix it" }] },
+        { type: "compaction_trigger" },
+      ],
+    }),
+  });
+  assert.equal(compactResponse.status, 200);
+  const compactStream = await compactResponse.text();
+  const events = compactStream
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => JSON.parse(line.slice(5).trim()));
+  const compactItem = events.find((event) => event.type === "response.output_item.done")?.item;
+  assert.equal(compactItem?.type, "compaction");
+  assert.match(compactItem.encrypted_content, /^dscodex-compaction-v1:/);
+  assert.equal(compactItem.encrypted_content.includes(summary), false);
+  assert.equal(observed[0].input.some((item) => item.type === "compaction_trigger"), false);
+  assert.equal("tools" in observed[0], false);
+  assert.equal("parallel_tool_calls" in observed[0], false);
+  assert.match(observed[0].input.at(-1).content[0].text, /compact handoff summary/i);
+
+  const replayResponse = await fetch(route(proxyUrl), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "deepseek/deepseek-v4-flash",
+      input: [
+        compactItem,
+        { type: "message", role: "user", content: [{ type: "input_text", text: "Continue" }] },
+      ],
+    }),
+  });
+  assert.equal(replayResponse.status, 200);
+  await replayResponse.text();
+  assert.equal(observed[1].input.some((item) => item.type === "compaction"), false);
+  const restored = observed[1].input.find((item) => item.role === "assistant");
+  assert.match(restored.content[0].text, /Compacted prior context/);
+  assert.match(restored.content[0].text, /tests and a restart are still pending/);
+});
+
 test("preserves explicit High reasoning", async (t) => {
   let observed;
   const upstream = http.createServer(async (request, response) => {

@@ -69,3 +69,10 @@ The non-negotiable details:
     only use the authenticated shutdown endpoint and must atomically preserve replacement-instance
     state; it must never terminate an unverified or recycled PID. Cap both compressed request bytes
     and decompressed request bytes before parsing JSON.
+12. DeepSeek does not implement Codex remote compaction v2. For a DeepSeek-bound request containing
+    `compaction_trigger`, the router must remove tools and the trigger, ask the same DeepSeek model
+    for a compact handoff summary, and return exactly one synthetic `compaction` output item before
+    `response.completed`. Encrypt the summary with AES-256-GCM using a key derived from the stable
+    router token; on later DeepSeek requests, decrypt only DSCodex-prefixed compaction items and
+    restore them as assistant summary context. Never route compaction through GPT or store the
+    summary as plaintext in the rollout file.
