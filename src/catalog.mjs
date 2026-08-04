@@ -14,6 +14,23 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+// Codex version bumps can turn previously optional catalog fields into
+// required ones faster than the app rewrites models_cache.json, and a single
+// unparseable entry breaks the whole model_catalog_json (app-server fails to
+// start). Backfill known-required fields on native entries with safe
+// defaults; the DeepSeek entry sets its own values explicitly.
+const NATIVE_ENTRY_DEFAULTS = {
+  supports_reasoning_summaries: false,
+};
+
+function backfillNativeEntry(model) {
+  const entry = clone(model);
+  for (const [key, value] of Object.entries(NATIVE_ENTRY_DEFAULTS)) {
+    if (entry[key] === undefined) entry[key] = value;
+  }
+  return entry;
+}
+
 function replaceIdentity(value) {
   if (typeof value !== "string") return value;
   return value
@@ -74,7 +91,7 @@ export function buildCatalog(cache) {
   const nativeModels = cache.models.filter((model) => model?.slug !== DEEPSEEK_PICKER_SLUG);
   const template = nativeModels.find((model) => model?.slug === "gpt-5.6-sol") ?? nativeModels[0];
   return {
-    models: [buildDeepSeekCatalogEntry(template), ...clone(nativeModels)],
+    models: [buildDeepSeekCatalogEntry(template), ...nativeModels.map(backfillNativeEntry)],
   };
 }
 

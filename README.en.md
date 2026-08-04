@@ -66,10 +66,13 @@ http://127.0.0.1:10110/<router-token>/v1   ← authenticated DSCodex loopback ro
 ```
 
 `openai_base_url` points at the router and `model_catalog_json` merges V4 Flash into the catalog;
-the router rewrites only that model's provider fields and forwards everything else unchanged. The
-desktop app starts a transparent bridge via `CODEX_CLI_PATH`, which rewrites only model-selection
-JSONL RPC before handing it to the stock bundled Codex binary; the per-provider effort/speed slots
-live in that bridge (`~/.codex/dscodex/model-selections.json`).
+the router rewrites only that model's provider fields and forwards everything else unchanged. Model
+switching works through the catalog out of the box. The desktop app additionally offers an
+**opt-in** transparent bridge (`node src/cli.mjs bridge enable`, mounted via `CODEX_CLI_PATH`),
+which rewrites only model-selection JSONL RPC before handing it to the stock bundled Codex binary;
+the per-provider effort/speed slots live in that bridge (`~/.codex/dscodex/model-selections.json`).
+The bridge is off by default: a global `CODEX_CLI_PATH` moves the app off its local daemon
+websocket (which supports reconnect) onto stdio, breaking Computer Use.
 
 ## Requirements
 
@@ -127,7 +130,7 @@ CLI note: `-m deepseek/deepseek-v4-flash` without the override may show `High`; 
 
 - Real DeepSeek tool loop and GPT OAuth passthrough verified end-to-end (`DSCODEX_TOOL_OK`,
   `DSCODEX_GPT_OAUTH_OK`).
-- The bridge covers default-picker changes, live-task switches, Fast restoration, and persistence
+- The bridge (opt-in) covers default-picker changes, live-task switches, Fast restoration, and persistence
   across app restarts; `model/list` shows `🐳 V4 Flash`, default `max`, supported `["high","max"]`,
   with native GPT entries preserved.
 
@@ -180,10 +183,16 @@ CLI note: `-m deepseek/deepseek-v4-flash` without the override may show `High`; 
   unverified PID. Request and decompressed-body limits protect the local process from accidental
   or hostile memory spikes.
 - **Platform differences.** Routing, key storage, and catalog merging behave identically on every
-  platform; the app-server bridge (picker-state memory for the desktop app) is macOS-only. Windows
-  desktop apps spawn `CODEX_CLI_PATH` directly and CreateProcess cannot run a script shim (only an
-  `.exe`), so `install` skips the bridge on Windows and the matching `doctor` check passes
-  trivially. Windows uses the same `%USERPROFILE%\.codex` layout; the key file's 0600 mode is a
+  platform; the app-server bridge (picker-state memory for the desktop app) is macOS-only and
+  opt-in (`bridge enable`). It stays off by default because it demotes the app's app-server
+  connection from the local daemon websocket to stdio, which can break Computer Use; `bridge
+  disable` reverts at any time and also strips the `CODEX_CLI_PATH` copies the app snapshotted into
+  `[mcp_servers.*.env]`. The bridge shim resolves node from PATH at runtime and only falls back to
+  the absolute path baked at install time; when `DSCODEX_REAL_CODEX` is lost (launchctl login
+  variables do not survive reboots) the wrapper falls back to the app's bundled Codex binary
+  instead of exiting with an error. Windows desktop apps spawn `CODEX_CLI_PATH` directly and
+  CreateProcess cannot run a script shim (only an `.exe`), so the bridge is unavailable on Windows
+  and the matching `doctor` check passes trivially. Windows uses the same `%USERPROFILE%\.codex` layout; the key file's 0600 mode is a
   no-op there and protection falls back to the account ACL. The router does not auto-start by
   default; `node src/cli.mjs autostart enable` registers it at login (macOS launchd / Linux
   systemd user service / Windows Task Scheduler). Crashes are relaunched automatically, while a

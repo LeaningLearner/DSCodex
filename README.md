@@ -53,7 +53,7 @@ http://127.0.0.1:10110/<router-token>/v1   ← 带认证的 DSCodex 本地路由
         https://chatgpt.com/backend-api/codex    （OAuth 流量原样转发）
 ```
 
-`openai_base_url` 指向本地路由，`model_catalog_json` 把 V4 Flash 合入模型目录；路由只改写该模型的 provider 字段，其余请求原样转发。桌面端经 `CODEX_CLI_PATH` 挂一个透明 bridge，只改写模型选择的 JSONL RPC，再交给 App 自带的原版 Codex 二进制；双槽 effort/speed 状态就存在这个 bridge 里（`~/.codex/dscodex/model-selections.json`）。
+`openai_base_url` 指向本地路由，`model_catalog_json` 把 V4 Flash 合入模型目录；路由只改写该模型的 provider 字段，其余请求原样转发。模型切换只依赖目录，开箱即用。桌面端另有一个**可选**的透明 bridge（`node src/cli.mjs bridge enable` 后径 `CODEX_CLI_PATH` 挂载），只改写模型选择的 JSONL RPC，再交给 App 自带的原版 Codex 二进制；双槽 effort/speed 状态就存在这个 bridge 里（`~/.codex/dscodex/model-selections.json`）。bridge 默认不启用：全局 `CODEX_CLI_PATH` 会让 App 放弃本地 daemon websocket（支持重连）改走 stdio，破坏 Computer Use。
 
 ## 环境要求
 
@@ -98,7 +98,7 @@ CLI 注意：`-m deepseek/deepseek-v4-flash` 不带覆盖参数时可能显示 `
 ## 已验证行为
 
 - 真实 DeepSeek 工具循环与 GPT OAuth 旁路均端到端实测通过（`DSCODEX_TOOL_OK`、`DSCODEX_GPT_OAUTH_OK`）。
-- bridge 覆盖默认 picker、已有任务切换、Fast 恢复与重启后的状态持久化；`model/list` 返回 `🐳 V4 Flash`、默认 `max`、可选 `["high","max"]`，原生 GPT 条目保留。
+- bridge（可选）覆盖默认 picker、已有任务切换、Fast 恢复与重启后的状态持久化；`model/list` 返回 `🐳 V4 Flash`、默认 `max`、可选 `["high","max"]`，原生 GPT 条目保留。
 
 ## 兼容性速查
 
@@ -120,7 +120,7 @@ CLI 注意：`-m deepseek/deepseek-v4-flash` 不带覆盖参数时可能显示 `
 - **Voice、Pets、插件、技能、MCP。** 都是客户端功能；语音由 GPT-Live 驱动，不会路由到 DeepSeek。
 - **Key 存储。** 保存在 `~/.codex/dscodex/config.json`（权限 0600，目录 0700）；Windows 使用当前用户 DPAPI 加密，POSIX 系统依靠仅所有者可读的文件权限。旧版 Windows 明文 key 会在下一次安装、启动或配置写入时自动迁移。介意持久化的话不要 `key set`，改用每次会话的 `DEEPSEEK_API_KEY`（或 macOS `launchctl setenv`）。运行时取值顺序：环境变量 → 存储文件 → macOS 登录会话；`key delete` 并重启路由即彻底清除。
 - **本地边界。** `install` 会生成 256 位路由令牌并写入 `openai_base_url`；`start` / `serve` 会校准 CLI 自有的 URL、端口和令牌，`doctor` 会验证三者一致，不带令牌的请求返回 404。`stop` 使用同一令牌和一次性关闭令牌握手，并以实例身份原子认领 PID 状态，不会删除替代实例的状态或向未经验证的 PID 发信号；请求体和解压后请求体均有限制，避免本地进程因异常输入发生内存峰值。
-- **平台差异。** 路由、key 存储、目录合并全平台一致；app-server bridge（桌面端模型菜单的状态记忆）仅 macOS——Windows 桌面端直接 spawn `CODEX_CLI_PATH`，脚本 shim 起不来（CreateProcess 只认 `.exe`），因此 Windows 上 `install` 跳过 bridge、`doctor` 对应项自动 `ok`。Windows 的配置目录同样是 `%USERPROFILE%\.codex`；key 文件的 0600 权限位在 Windows 不生效，依赖账户 ACL 保护。路由默认不随机启动；`node src/cli.mjs autostart enable` 可注册登录自启（macOS launchd / Linux systemd user service / Windows 任务计划），崩溃会被自动拉起，而手动 `stop` 是优雅退出（退出码 0），不会被复活；`autostart disable` 和 `uninstall` 都会移除自启项。未开启自启时，重启后重新 `node src/cli.mjs start` 即可（key 已持久化，无需重配）。
+- **平台差异。** 路由、key 存储、目录合并全平台一致；app-server bridge（桌面端模型菜单的状态记忆）仅 macOS 且为可选（`bridge enable`）。默认不启用 bridge：它会把 App 的 app-server 连接从本地 daemon websocket 降级为 stdio，可能破坏 Computer Use；启用后 `bridge disable` 可随时回退，回退会同时清理 App 快照进 `[mcp_servers.*.env]` 的 `CODEX_CLI_PATH`。bridge shim 运行时优先用 PATH 里的 node，找不到才回退安装时焂入的绝对路径；`DSCODEX_REAL_CODEX` 丢失（重启后 launchctl 会话变量不保留）时 wrapper 会回退到 App 自带 Codex 二进制而不是报错退出。Windows 桌面端直接 spawn `CODEX_CLI_PATH`，脚本 shim 起不来（CreateProcess 只认 `.exe`），因此 Windows 上 bridge 不可用、`doctor` 对应项自动 `ok`。Windows 的配置目录同样是 `%USERPROFILE%\.codex`；key 文件的 0600 权限位在 Windows 不生效，依赖账户 ACL 保护。路由默认不随机启动；`node src/cli.mjs autostart enable` 可注册登录自启（macOS launchd / Linux systemd user service / Windows 任务计划），崩溃会被自动拉起，而手动 `stop` 是优雅退出（退出码 0），不会被复活；`autostart disable` 和 `uninstall` 都会移除自启项。未开启自启时，重启后重新 `node src/cli.mjs start` 即可（key 已持久化，无需重配）。
 
 ## 任务中思考为什么反复折叠
 
