@@ -10,6 +10,7 @@ import {
   install,
   managedRouterConfigMatches,
   readManagedRouterToken,
+  stripBridgeCliPath,
   stripManagedConfig,
   uninstall,
 } from "../src/config.mjs";
@@ -31,6 +32,14 @@ const TEMPLATE = {
 };
 
 const ROUTER_TOKEN = "A".repeat(43);
+
+test("catalog backfills newly required fields on stale native cache entries", () => {
+  const catalog = buildCatalog({ models: [TEMPLATE] });
+  const native = catalog.models.find((model) => model.slug === "gpt-5.6-sol");
+  assert.equal(native.supports_reasoning_summaries, false);
+  const deepseek = catalog.models.find((model) => model.slug === "deepseek/deepseek-v4-flash");
+  assert.equal(deepseek.supports_reasoning_summaries, false);
+});
 
 test("catalog adds one whale-labelled V4 Flash entry with honest reasoning levels", () => {
   const catalog = buildCatalog({ models: [TEMPLATE] });
@@ -223,4 +232,53 @@ test("install migrates a legacy Windows plaintext key before returning", () => {
   install({ paths, port: 10110 });
   assert.equal(readStoredKey(paths.keyFile), "legacy-install-key");
   assert.equal(readFileSync(paths.keyFile, "utf8").includes("legacy-install-key"), false);
+});
+
+test("stripBridgeCliPath removes DSCodex-owned CODEX_CLI_PATH from MCP env tables", () => {
+  const shim = "/Users/x/.codex/dscodex/codex-cli-bridge.sh";
+  const wrapper = "/repo/src/codex-wrapper.mjs";
+  const content = [
+    'model = "gpt-5.6-sol"',
+    "",
+    "[mcp_servers.node_repl]",
+    'command = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl"',
+    "",
+    "[mcp_servers.node_repl.env]",
+    'NODE_REPL_TRUSTED_CODE_PATHS = "/Users/x/.codex"',
+    `CODEX_CLI_PATH = "${shim}"`,
+    'CODEX_HOME = "/Users/x/.codex"',
+    "",
+    "[mcp_servers.other.env]",
+    `CODEX_CLI_PATH = "${wrapper}"`,
+    "",
+    "[desktop]",
+    'theme = "light"',
+    "",
+  ].join("\n");
+
+  const stripped = stripBridgeCliPath(content, [shim, wrapper]);
+  assert.equal(stripped.includes("CODEX_CLI_PATH"), false);
+  assert.match(stripped, /NODE_REPL_TRUSTED_CODE_PATHS/);
+  assert.match(stripped, /CODEX_HOME/);
+  assert.match(stripped, /\[mcp_servers\.node_repl\]/);
+  assert.match(stripped, /theme = "light"/);
+});
+
+test("stripBridgeCliPath keeps user-owned CODEX_CLI_PATH and non-MCP tables", () => {
+  const shim = "/Users/x/.codex/dscodex/codex-cli-bridge.sh";
+  const content = [
+    'CODEX_CLI_PATH = "/usr/local/bin/codex"',
+    "",
+    "[mcp_servers.node_repl.env]",
+    'CODEX_CLI_PATH = "/opt/user-owned/codex"',
+    "",
+  ].join("\n");
+
+  const stripped = stripBridgeCliPath(content, [shim]);
+  assert.equal(stripped, content);
+});
+
+test("stripBridgeCliPath with no owned values is a no-op", () => {
+  const content = '[mcp_servers.node_repl.env]\nCODEX_CLI_PATH = "/x"\n';
+  assert.equal(stripBridgeCliPath(content, []), content);
 });

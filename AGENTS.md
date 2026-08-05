@@ -12,14 +12,21 @@ The non-negotiable details:
    stored key file.
 2. Run `node src/cli.mjs install`, then `node src/cli.mjs start`, then
    `node src/cli.mjs doctor`. Doctor must report `ok` for config, catalog, router token, proxy, key,
-   and the app-server bridge. Install must refuse a user-owned `CODEX_CLI_PATH`; it may only install the
-   DSCodex wrapper when that login-session variable is absent or already DSCodex-owned. The
-   variable must point at the generated shim `~/.codex/dscodex/codex-cli-bridge.sh`, never
-   directly at `src/codex-wrapper.mjs`: GUI apps get a bare launchd PATH without Homebrew, so a
-   `#!/usr/bin/env node` shebang fails there and the shim embeds the absolute node path. The
-   bridge is macOS-only: Windows desktop apps spawn `CODEX_CLI_PATH` directly and cannot run a
-   script shim (CreateProcess requires an `.exe`), so on Windows `install` skips the bridge and
-   the `doctor` bridge check passes trivially.
+   and the app-server bridge state. The app-server bridge is opt-in (`node src/cli.mjs bridge enable`)
+   because a global `CODEX_CLI_PATH` demotes the app from its local daemon websocket (which
+   supports reconnect) to stdio and breaks Computer Use; `install` therefore never sets it and
+   actively removes DSCodex-owned copies left by older versions, including any `CODEX_CLI_PATH`
+   the Codex app snapshotted into `[mcp_servers.*.env]`. When enabled, `bridge enable` must refuse
+   a user-owned `CODEX_CLI_PATH`; the variable must point at the generated shim
+   `~/.codex/dscodex/codex-cli-bridge.sh`, never directly at `src/codex-wrapper.mjs`: GUI apps get
+   a bare launchd PATH without Homebrew, so a `#!/usr/bin/env node` shebang fails there. The shim
+   resolves node from PATH at runtime and only falls back to the absolute path baked at install
+   time. The wrapper must resolve the stock Codex binary through the shared fallback chain
+   (`src/real-codex.mjs`) instead of exiting when `DSCODEX_REAL_CODEX` is missing: launchctl login
+   variables do not survive reboots, and a stale `CODEX_CLI_PATH` must degrade to stock Codex, not
+   hard-fail every spawn. The bridge is macOS-only: Windows desktop apps spawn `CODEX_CLI_PATH`
+   directly and cannot run a script shim (CreateProcess requires an `.exe`), so on Windows the
+   bridge is unavailable and the `doctor` bridge check passes trivially.
 3. Run `npm test`; all tests must pass.
 4. The ChatGPT desktop app must be fully quit (`⌘Q`) and relaunched, and the user must start a NEW
    task to see `🐳 V4 Flash`. Existing tasks keep their old model state.

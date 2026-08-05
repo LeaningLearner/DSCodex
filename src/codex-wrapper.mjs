@@ -1,16 +1,20 @@
 #!/usr/bin/env node
-import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import { createAppServerState } from "./app-server-state.mjs";
 import { needsShellSpawn } from "./constants.mjs";
+import { resolveRealCodex } from "./real-codex.mjs";
 
-const self = resolve(process.argv[1]);
-const realCodex = process.env.DSCODEX_REAL_CODEX?.trim();
-if (!realCodex || !existsSync(realCodex) || resolve(realCodex) === self) {
-  console.error("dscodex: DSCODEX_REAL_CODEX does not point to the stock Codex binary");
+// `launchctl setenv DSCODEX_REAL_CODEX` does not survive reboots, so the env
+// override may be missing while a stale CODEX_CLI_PATH still points here.
+// Fall back to the stock Codex locations instead of hard-failing: every
+// spawn through this wrapper (app-server, Computer Use, MCP servers) must
+// degrade to stock Codex rather than exit(1).
+const realCodex = resolveRealCodex();
+if (!realCodex) {
+  console.error("dscodex: could not locate the stock Codex binary for the app-server bridge");
   process.exit(1);
 }
 

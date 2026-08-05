@@ -21,6 +21,7 @@ import {
   ensureManagedRouterBinding,
   install,
   managedRouterConfigMatches,
+  stripBridgeCliPathFromConfig,
   uninstall,
 } from "./config.mjs";
 import {
@@ -52,8 +53,7 @@ import {
   systemdUnitPath,
 } from "./autostart.mjs";
 import { DEFAULT_PORT, HOST, VERSION, pathsFor, resolveCodexHome } from "./constants.mjs";
-
-const APP_SERVER_WRAPPER = fileURLToPath(new URL("./codex-wrapper.mjs", import.meta.url));
+import { APP_SERVER_WRAPPER, resolveRealCodex } from "./real-codex.mjs";
 
 function ts() {
   return new Date().toISOString();
@@ -69,23 +69,6 @@ function launchctlGet(name) {
   } catch {
     return "";
   }
-}
-
-function stockCodexPath() {
-  const candidates = [
-    launchctlGet("DSCODEX_REAL_CODEX"),
-    process.env.DSCODEX_REAL_CODEX?.trim(),
-    "/Applications/ChatGPT.app/Contents/Resources/codex",
-  ];
-  try {
-    candidates.push(execFileSync("/usr/bin/which", ["codex"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim());
-  } catch {
-    // The bundled ChatGPT path above is the normal macOS install.
-  }
-  return candidates.find((candidate) => candidate && candidate !== APP_SERVER_WRAPPER && existsSync(candidate)) ?? "";
 }
 
 function nodePath() {
@@ -107,8 +90,17 @@ function nodePath() {
 
 function writeBridgeShim(path) {
   // GUI apps get a bare launchd PATH (/usr/bin:/bin:...), so a `#!/usr/bin/env node`
-  // shebang fails there. Point CODEX_CLI_PATH at a shim with absolute paths instead.
-  const content = `#!/bin/sh\nexec ${JSON.stringify(nodePath())} ${JSON.stringify(APP_SERVER_WRAPPER)} "$@"\n`;
+  // shebang fails there. Resolve node at runtime first, and only fall back to the
+  // interpreter path baked at install time: a version-manager upgrade (fnm/nvm/
+  // Homebrew) must not strand this shim on a deleted binary.
+  const content = [
+    "#!/bin/sh",
+    "if command -v node >/dev/null 2>&1; then",
+    `  exec node ${JSON.stringify(APP_SERVER_WRAPPER)} "$@"`,
+    "fi",
+    `exec ${JSON.stringify(nodePath())} ${JSON.stringify(APP_SERVER_WRAPPER)} "$@"`,
+    "",
+  ].join("\n");
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(path, content, { mode: 0o755 });
 }
@@ -119,7 +111,7 @@ function bridgePlan(paths) {
   if (existing && existing !== paths.bridgeShim && existing !== APP_SERVER_WRAPPER) {
     throw new Error(`Refusing to replace user-owned CODEX_CLI_PATH: ${existing}`);
   }
-  const realCodex = stockCodexPath();
+  const realCodex = resolveRealCodex();
   if (!realCodex) throw new Error("Could not locate the stock Codex binary for the app-server bridge");
   return { realCodex, shim: paths.bridgeShim };
 }
@@ -134,9 +126,49 @@ function activateBridge(plan) {
 function deactivateBridge(paths) {
   if (process.platform !== "darwin") return;
   const current = launchctlGet("CODEX_CLI_PATH");
-  if (current !== paths.bridgeShim && current !== APP_SERVER_WRAPPER) return;
-  execFileSync("/bin/launchctl", ["unsetenv", "CODEX_CLI_PATH"]);
-  execFileSync("/bin/launchctl", ["unsetenv", "DSCODEX_REAL_CODEX"]);
+  if (current === paths.bridgeShim || current === APP_SERVER_WRAPPER) {
+    execFileSync("/bin/launchctl", ["unsetenv", "CODEX_CLI_PATH"]);
+    execFileSync("/bin/launchctl", ["unsetenv", "DSCODEX_REAL_CODEX"]);
+  }
+  // The Codex app snapshots CODEX_CLI_PATH into [mcp_servers.*.env]; clear
+  // DSCodex-owned copies so Computer Use stops spawning the shim as well.
+  stripBridgeCliPathFromConfig({ paths, ownedValues: [paths.bridgeShim, APP_SERVER_WRAPPER] });
+}
+
+function bridgeStateOk(paths) {
+  const current = launchctlGet("CODEX_CLI_PATH");
+  if (current !== paths.bridgeShim && current !== APP_SERVER_WRAPPER) return true;
+  return existsSync(paths.bridgeShim) && Boolean(resolveRealCodex());
+}
+
+async function manageBridge(subcommand, paths) {
+  if (process.platform !== "darwin") {
+    console.log("The app-server bridge is macOS-only; model switching works without it elsewhere");
+    return;
+  }
+  if (subcommand === "enable") {
+    activateBridge(bridgePlan(paths));
+    console.log("App-server bridge enabled for this login session; fully quit and restart Codex");
+    console.log("Note: the bridge moves the app onto a stdio transport and can degrade Computer Use; `bridge disable` reverts");
+    return;
+  }
+  if (subcommand === "disable") {
+    deactivateBridge(paths);
+    console.log("App-server bridge disabled; fully quit and restart Codex");
+    return;
+  }
+  if (subcommand === "status") {
+    const current = launchctlGet("CODEX_CLI_PATH");
+    if (current === paths.bridgeShim || current === APP_SERVER_WRAPPER) {
+      console.log(`bridge: enabled (CODEX_CLI_PATH=${current})`);
+    } else if (current) {
+      console.log(`bridge: disabled; CODEX_CLI_PATH is user-owned (${current})`);
+    } else {
+      console.log("bridge: disabled");
+    }
+    return;
+  }
+  throw new Error(`Unknown bridge subcommand: ${subcommand}`);
 }
 
 function parsePort(args, env = process.env) {
@@ -722,11 +754,10 @@ async function doctor(port) {
     router_token_present: Boolean(routerToken),
     proxy_running: Boolean(ready),
     deepseek_key_in_proxy: Boolean(ready?.deepseek_key),
-    // The app-server bridge is macOS-only: Windows GUI apps cannot spawn a script
-    // shim (CreateProcess requires an .exe), so the check is skipped elsewhere.
-    app_server_bridge: process.platform !== "darwin" || (
-      launchctlGet("CODEX_CLI_PATH") === paths.bridgeShim && Boolean(launchctlGet("DSCODEX_REAL_CODEX"))
-    ),
+    // The app-server bridge is macOS-only and opt-in. The check passes when
+    // the bridge is cleanly disabled (no DSCodex-owned CODEX_CLI_PATH) or
+    // fully functional (shim present and the stock Codex binary resolvable).
+    app_server_bridge: process.platform !== "darwin" || bridgeStateOk(paths),
   };
   for (const [name, ok] of Object.entries(checks)) console.log(`${ok ? "ok" : "missing"}  ${name}`);
   if (Object.values(checks).some((ok) => !ok)) process.exitCode = 1;
@@ -748,6 +779,7 @@ Usage: dscodex <command> [--port ${DEFAULT_PORT}]
   start       run the loopback router in the background
   serve       run the loopback router in the foreground
   autostart enable|disable|status  run the router automatically at login
+  bridge enable|disable|status  opt-in app-server bridge (provider effort memory; may degrade Computer Use)
   status      show router state
   doctor      verify catalog, routing, key, and app-server bridge state
   stop        stop the background router
@@ -769,13 +801,17 @@ async function main() {
   const { paths } = runtime();
   switch (command) {
     case "install": {
-      const plan = bridgePlan(paths);
       const result = install({ paths, port });
-      activateBridge(plan);
+      // The app-server bridge is opt-in: a global CODEX_CLI_PATH forces the
+      // Codex app off its local daemon websocket (which supports reconnect)
+      // onto stdio through our shim, breaking Computer Use. Undo any bridge
+      // a previous DSCodex version installed globally; model switching works
+      // through the catalog either way.
+      deactivateBridge(paths);
       console.log(`Installed ${result.catalog.models[0].display_name} with default Max reasoning`);
-      console.log("Installed provider-specific effort and speed memory for the ChatGPT app");
       console.log(`Fully quit and restart Codex after starting DSCodex on ${HOST}:${port}`);
       console.log("Optional: `node src/cli.mjs autostart enable` starts the router at login");
+      console.log("Optional: `node src/cli.mjs bridge enable` restores provider-specific effort memory in the ChatGPT app");
       break;
     }
     case "sync": {
@@ -788,6 +824,7 @@ async function main() {
     case "start": await start(port); break;
     case "serve": await serve(port); break;
     case "autostart": await manageAutostart(args[0] ?? "status", paths, port); break;
+    case "bridge": await manageBridge(args[0] ?? "status", paths); break;
     case "status": await status(port); break;
     case "doctor": await doctor(port); break;
     case "stop": await stop(); break;

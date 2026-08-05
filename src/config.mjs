@@ -218,6 +218,35 @@ export function buildInstalledConfig(content, options) {
   return injectDesktopReasoning(injectRoot(clean, options));
 }
 
+const MCP_ENV_TABLE = /^\s*\[mcp_servers\.[^\]]+\.env\]\s*$/;
+const BRIDGE_ENV_KEY = "CODEX_CLI_PATH";
+
+// The Codex app snapshots CODEX_CLI_PATH into [mcp_servers.*.env] while the
+// bridge is active, persisting the hijack past `launchctl unsetenv`. Remove
+// only DSCodex-owned values (the shim or the wrapper); never a user override.
+export function stripBridgeCliPath(content, ownedValues) {
+  const owned = new Set(ownedValues.filter(Boolean));
+  if (!owned.size) return content;
+  const lines = content.replaceAll("\r\n", "\n").split("\n");
+  let inMcpEnv = false;
+  const kept = [];
+  for (const line of lines) {
+    if (/^\s*\[/.test(line)) inMcpEnv = MCP_ENV_TABLE.test(line);
+    if (inMcpEnv && keyOf(line) === BRIDGE_ENV_KEY && owned.has(assignedString(line))) continue;
+    kept.push(line);
+  }
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n");
+}
+
+export function stripBridgeCliPathFromConfig({ paths, ownedValues }) {
+  if (!existsSync(paths.config)) return false;
+  const original = readFileSync(paths.config, "utf8");
+  const repaired = stripBridgeCliPath(original, ownedValues);
+  if (repaired === original) return false;
+  atomicWrite(paths.config, repaired.endsWith("\n") ? repaired : `${repaired}\n`);
+  return true;
+}
+
 function atomicWrite(path, content, mode = 0o600) {
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.dscodex-tmp-${process.pid}`;
