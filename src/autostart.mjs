@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 
 export const LAUNCHD_LABEL = "com.dscodex.router";
 export const SYSTEMD_UNIT = "dscodex.service";
@@ -91,7 +91,7 @@ function winQuote(value) {
 }
 
 function powershellPath() {
-  return join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  return win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 }
 
 function psPath(value, homeDir) {
