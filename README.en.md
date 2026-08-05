@@ -142,6 +142,7 @@ CLI note: `-m deepseek/deepseek-v4-flash` without the override may show `High`; 
 | Codex CLI / IDE extension | Supported |
 | Native Windows (Codex CLI / IDE extension) | Supported; the app-server bridge is macOS-only, see below |
 | Multi-round DeepSeek tool calling | Supported through the native Responses API |
+| Automatic / manual Codex context compaction | Supported; the router converts `compaction_trigger` into a DeepSeek summary and an encrypted Codex compaction item |
 | GPT / Codex OAuth models | Supported through unchanged passthrough |
 | chatgpt.com web app | Not supported; DSCodex integrates with the local Codex runtime |
 
@@ -149,6 +150,12 @@ CLI note: `-m deepseek/deepseek-v4-flash` without the override may show `High`; 
 
 - **Usage stats.** The Codex app's Profile usage statistics are read-only — DeepSeek usage cannot
   be added (verified).
+- **Context compaction.** The DeepSeek Responses API does not natively emit the `compaction`
+  output item required by Codex remote compaction v2. DSCodex intercepts `compaction_trigger`,
+  asks the selected V4 Flash model for a handoff summary, and wraps it with AES-256-GCM using a
+  key derived from the local router token. Later DeepSeek requests decrypt it inside the router
+  and restore it as summary context. Compaction does not switch to GPT and the summary is not
+  stored as plaintext in the session JSONL.
 - **GPT vision.** Describes borrow the request's ChatGPT OAuth headers; description quality depends
   on the GPT model (`gpt-5.6-sol` by default, override with `DSCODEX_VISION_MODEL`). Without OAuth
   headers (pure API-key setups) images pass through untouched; on a failed describe a clear
