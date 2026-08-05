@@ -105,6 +105,9 @@ function convertInputItem(item, compactionSecret) {
         content: [{ type: "input_text", text: `[Compacted prior context]\n${summary}` }],
       };
     }
+    // Not DSCodex-sealed (GPT-sealed after a provider switch, or a rotated router
+    // token): DeepSeek would reject the raw compaction item, so drop it.
+    return null;
   }
   const converted = { ...item };
   delete converted.id;
@@ -133,7 +136,9 @@ export function buildDeepSeekBody(input, { compactionSecret = "" } = {}) {
   delete body.metadata;
   delete body.service_tier;
   if (Array.isArray(body.input)) {
-    body.input = body.input.map((item) => convertInputItem(item, compactionSecret));
+    body.input = body.input
+      .map((item) => convertInputItem(item, compactionSecret))
+      .filter((item) => item != null);
   }
   return body;
 }

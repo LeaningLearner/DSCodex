@@ -154,8 +154,9 @@ CLI note: `-m deepseek/deepseek-v4-flash` without the override may show `High`; 
   output item required by Codex remote compaction v2. DSCodex intercepts `compaction_trigger`,
   asks the selected V4 Flash model for a handoff summary, and wraps it with AES-256-GCM using a
   key derived from the local router token. Later DeepSeek requests decrypt it inside the router
-  and restore it as summary context. Compaction does not switch to GPT and the summary is not
-  stored as plaintext in the session JSONL.
+  and restore it as summary context; a compaction item that cannot be decrypted (for example one
+  sealed by GPT before a provider switch) is dropped instead of forwarded raw. Compaction does
+  not switch to GPT and the summary is not stored as plaintext in the session JSONL.
 - **GPT vision.** Describes borrow the request's ChatGPT OAuth headers; description quality depends
   on the GPT model (`gpt-5.6-sol` by default, override with `DSCODEX_VISION_MODEL`). Without OAuth
   headers (pure API-key setups) images pass through untouched; on a failed describe a clear

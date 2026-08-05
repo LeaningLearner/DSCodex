@@ -175,6 +175,43 @@ test("adapts Codex remote compaction v2 to a DeepSeek summary and restores it on
   assert.match(restored.content[0].text, /tests and a restart are still pending/);
 });
 
+test("drops compaction items that cannot be decrypted instead of forwarding them", async (t) => {
+  let observed;
+  const upstream = http.createServer(async (request, response) => {
+    observed = JSON.parse(await bodyOf(request));
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("{}");
+  });
+  const upstreamUrl = await listen(upstream);
+  const proxy = createProxyServer({
+    deepSeekKey: "test-key",
+    deepSeekBaseUrl: upstreamUrl,
+    logger: { info() {}, error() {} },
+    routerToken: ROUTER_TOKEN,
+  });
+  const proxyUrl = await listen(proxy);
+  t.after(async () => { await close(proxy); await close(upstream); });
+
+  const response = await fetch(route(proxyUrl), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "deepseek/deepseek-v4-flash",
+      input: [
+        { type: "compaction", id: "cmp_gpt", encrypted_content: "gpt-sealed-blob" },
+        { type: "compaction", id: "cmp_tampered", encrypted_content: "dscodex-compaction-v1:not-valid" },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "Continue" }] },
+      ],
+    }),
+  });
+  assert.equal(response.status, 200);
+  await response.text();
+  assert.equal(observed.input.some((item) => item.type === "compaction"), false);
+  assert.deepEqual(observed.input, [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "Continue" }] },
+  ]);
+});
+
 test("preserves explicit High reasoning", async (t) => {
   let observed;
   const upstream = http.createServer(async (request, response) => {
