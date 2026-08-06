@@ -118,6 +118,78 @@ function convertInputItem(item, compactionSecret) {
   return converted;
 }
 
+// Codex replays a tool call as a call item plus a matching output item. DeepSeek's
+// Responses API requires the output to directly follow its call; OpenAI's tolerates
+// items in between, and Codex inserts PostToolUse hook context as a developer
+// message that can land inside the pair. DeepSeek then rejects the whole request
+// with "No tool output found for tool call ...", and because the developer message
+// stays in the session history every later request fails the same way.
+const CALL_OUTPUT_TYPES = new Map([
+  ["function_call", "function_call_output"],
+  ["custom_tool_call", "custom_tool_call_output"],
+  ["local_shell_call", "local_shell_call_output"],
+]);
+
+// DeepSeek also rejects a replayed assistant turn that carries more than one tool
+// call behind a single reasoning item — reporting a misleading "The reasoning_text
+// in the thinking mode must be passed back to the API." — even though the model
+// emits such turns itself. Give every extra call in the turn its own copy of the
+// turn's reasoning. A turn is a run of reasoning, assistant messages (Codex emits a
+// preamble between the reasoning and the calls), and call items; anything else —
+// notably a tool output — ends it, so a turn that carries no reasoning of its own
+// never inherits an earlier turn's.
+function reasoningForExtraCalls(items) {
+  const clones = new Map();
+  let turnReasoning = null;
+  let callsInTurn = 0;
+  items.forEach((item, index) => {
+    const type = item && typeof item === "object" ? item.type : undefined;
+    if (type === "reasoning") {
+      turnReasoning = item;
+      callsInTurn = 0;
+      return;
+    }
+    if (type === "message" && item.role === "assistant") return;
+    if (CALL_OUTPUT_TYPES.has(type)) {
+      if (turnReasoning && callsInTurn > 0) clones.set(index, turnReasoning);
+      callsInTurn += 1;
+      return;
+    }
+    turnReasoning = null;
+    callsInTurn = 0;
+  });
+  return clones;
+}
+
+// Pull each tool output up to sit directly after its call, leaving every other item
+// in its original relative position. A call whose output is missing stays where it
+// is instead of dragging the rest of the conversation out of order.
+function normalizeToolCallReplay(items) {
+  if (!Array.isArray(items)) return items;
+  const clones = reasoningForExtraCalls(items);
+  const consumed = new Set();
+  const result = [];
+  for (let index = 0; index < items.length; index += 1) {
+    if (consumed.has(index)) continue;
+    const item = items[index];
+    const reasoning = clones.get(index);
+    if (reasoning) result.push(structuredClone(reasoning));
+    result.push(item);
+    const outputType = item && typeof item === "object" ? CALL_OUTPUT_TYPES.get(item.type) : undefined;
+    if (!outputType || item.call_id == null) continue;
+    for (let next = index + 1; next < items.length; next += 1) {
+      if (consumed.has(next)) continue;
+      const candidate = items[next];
+      if (candidate?.type === outputType && candidate.call_id === item.call_id) {
+        result.push(candidate);
+        consumed.add(next);
+        break;
+      }
+    }
+  }
+  return result;
+}
+
 export function buildDeepSeekBody(input, { compactionSecret = "" } = {}) {
   const body = structuredClone(input);
   const requestedEffort = body.reasoning?.effort;
@@ -135,10 +207,15 @@ export function buildDeepSeekBody(input, { compactionSecret = "" } = {}) {
   delete body.background;
   delete body.metadata;
   delete body.service_tier;
+  // DeepSeek emits parallel tool calls but cannot accept the resulting turn back,
+  // so keep the shape out of the history in the first place.
+  body.parallel_tool_calls = false;
   if (Array.isArray(body.input)) {
-    body.input = body.input
-      .map((item) => convertInputItem(item, compactionSecret))
-      .filter((item) => item != null);
+    body.input = normalizeToolCallReplay(
+      body.input
+        .map((item) => convertInputItem(item, compactionSecret))
+        .filter((item) => item != null),
+    );
   }
   return body;
 }
