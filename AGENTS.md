@@ -91,8 +91,12 @@ The non-negotiable details:
     `developer` message that can land inside the pair — so the router re-pairs them for
     `function_call`, `custom_tool_call`, and `local_shell_call`; the repair must preserve the
     relative order of every other item and must leave a call whose output is missing where it is.
-    A turn must never replay more than one tool call behind a single `reasoning` item (DeepSeek
-    reports a misleading "reasoning_text must be passed back"), so the catalog entry sets
-    `supports_parallel_tool_calls = false` and the router forces `parallel_tool_calls: false`;
-    duplicating the turn's reasoning for extra calls is replay repair for already-wedged sessions
-    only, and must never copy reasoning across a turn boundary.
+    Pair on `call_id`, never on `id`: Codex sends both, but `id` is a local UUID and only `call_id`
+    carries the `call_…` value the API matches on. A turn must never replay more than one tool call
+    behind a single `reasoning` item (DeepSeek reports a misleading "reasoning_text must be passed
+    back"), so the catalog entry sets `supports_parallel_tool_calls = false` and the router forces
+    `parallel_tool_calls: false`; duplicating the turn's reasoning for extra calls is replay repair
+    for already-wedged sessions only, and must never copy reasoning across a turn boundary. A turn
+    runs from its `reasoning` item through its calls and includes the assistant preamble message
+    Codex emits in between — real rollouts show `reasoning` → `message(assistant)` → call, call —
+    while a tool output ends it.
