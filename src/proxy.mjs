@@ -134,9 +134,10 @@ const CALL_OUTPUT_TYPES = new Map([
 // call behind a single reasoning item — reporting a misleading "The reasoning_text
 // in the thinking mode must be passed back to the API." — even though the model
 // emits such turns itself. Give every extra call in the turn its own copy of the
-// turn's reasoning. Only an uninterrupted run of reasoning and call items counts as
-// one turn, so a turn that carries no reasoning of its own never inherits an
-// earlier turn's.
+// turn's reasoning. A turn is a run of reasoning, assistant messages (Codex emits a
+// preamble between the reasoning and the calls), and call items; anything else —
+// notably a tool output — ends it, so a turn that carries no reasoning of its own
+// never inherits an earlier turn's.
 function reasoningForExtraCalls(items) {
   const clones = new Map();
   let turnReasoning = null;
@@ -148,6 +149,7 @@ function reasoningForExtraCalls(items) {
       callsInTurn = 0;
       return;
     }
+    if (type === "message" && item.role === "assistant") return;
     if (CALL_OUTPUT_TYPES.has(type)) {
       if (turnReasoning && callsInTurn > 0) clones.set(index, turnReasoning);
       callsInTurn += 1;

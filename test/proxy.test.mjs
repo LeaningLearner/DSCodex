@@ -487,6 +487,31 @@ test("gives each parallel tool call its own reasoning without leaking it into la
   ]);
   assert.notEqual(parallel.input[1], parallel.input[4]);
 
+  // Codex emits an assistant preamble between the reasoning and the calls; that
+  // message is part of the same turn, so the extra call still needs a copy.
+  const withPreamble = buildDeepSeekBody({
+    model: "deepseek/deepseek-v4-flash",
+    input: [
+      say("user", "u1"),
+      think("r1"),
+      say("assistant", "Checking two things"),
+      { type: "function_call", call_id: "c1", name: "shell", arguments: "{}" },
+      { type: "function_call", call_id: "c2", name: "shell", arguments: "{}" },
+      { type: "function_call_output", call_id: "c1", output: "a" },
+      { type: "function_call_output", call_id: "c2", output: "b" },
+    ],
+  });
+  assert.deepEqual(shape(withPreamble.input), [
+    "user:u1",
+    "reasoning:r1",
+    "assistant:Checking two things",
+    "function_call:c1",
+    "function_call_output:c1",
+    "reasoning:r1",
+    "function_call:c2",
+    "function_call_output:c2",
+  ]);
+
   // A second turn that carries no reasoning of its own must not inherit the first turn's.
   const sequential = buildDeepSeekBody({
     model: "deepseek/deepseek-v4-flash",
