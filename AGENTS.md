@@ -85,3 +85,14 @@ The non-negotiable details:
     (GPT-sealed after a provider switch, or a rotated token) must be dropped, never forwarded raw
     to DeepSeek. Never route compaction through GPT or store the summary as plaintext in the
     rollout file.
+13. DeepSeek's Responses API is stricter than OpenAI's about replaying tool-call turns, and a
+    rejected replay wedges the session permanently because the bad shape stays in the history.
+    Every tool output must directly follow its call — Codex inserts PostToolUse hook context as a
+    `developer` message that can land inside the pair — so the router re-pairs them for
+    `function_call`, `custom_tool_call`, and `local_shell_call`; the repair must preserve the
+    relative order of every other item and must leave a call whose output is missing where it is.
+    A turn must never replay more than one tool call behind a single `reasoning` item (DeepSeek
+    reports a misleading "reasoning_text must be passed back"), so the catalog entry sets
+    `supports_parallel_tool_calls = false` and the router forces `parallel_tool_calls: false`;
+    duplicating the turn's reasoning for extra calls is replay repair for already-wedged sessions
+    only, and must never copy reasoning across a turn boundary.

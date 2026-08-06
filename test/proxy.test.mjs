@@ -3,7 +3,7 @@ import http from "node:http";
 import test from "node:test";
 import { once } from "node:events";
 import { gzipSync, zstdCompressSync } from "node:zlib";
-import { createProxyServer } from "../src/proxy.mjs";
+import { buildDeepSeekBody, createProxyServer } from "../src/proxy.mjs";
 
 const ROUTER_TOKEN = "A".repeat(43);
 
@@ -410,4 +410,103 @@ test("rejects requests without the router token, while OAuth remains optional", 
   });
   assert.equal(authorized.status, 200);
   assert.equal(upstreamHits, 1);
+});
+
+const shape = (items) =>
+  items.map((item) =>
+    item.type === "message" ? `${item.role}:${item.content[0].text}`
+      : item.type === "reasoning" ? `reasoning:${item.content[0].text}`
+        : `${item.type}:${item.call_id}`);
+
+const say = (role, text) => ({ type: "message", role, content: [{ type: "input_text", text }] });
+const think = (text) => ({ type: "reasoning", content: [{ type: "reasoning_text", text }] });
+
+test("re-pairs a tool output with its call when hook context is interleaved", () => {
+  const body = buildDeepSeekBody({
+    model: "deepseek/deepseek-v4-flash",
+    input: [
+      say("user", "u1"),
+      think("r1"),
+      { type: "function_call", call_id: "c1", name: "shell", arguments: "{}" },
+      say("developer", "GitNexus index is stale"),
+      { type: "function_call_output", call_id: "c1", output: "ok" },
+      { type: "custom_tool_call", call_id: "p1", name: "apply_patch", input: "*** Begin Patch" },
+      say("developer", "hook again"),
+      { type: "custom_tool_call_output", call_id: "p1", output: "done" },
+    ],
+  });
+
+  assert.deepEqual(shape(body.input), [
+    "user:u1",
+    "reasoning:r1",
+    "function_call:c1",
+    "function_call_output:c1",
+    "developer:GitNexus index is stale",
+    "custom_tool_call:p1",
+    "custom_tool_call_output:p1",
+    "developer:hook again",
+  ]);
+});
+
+test("leaves conversation order alone when a tool call has no output", () => {
+  const input = [
+    say("user", "u1"),
+    think("r1"),
+    { type: "function_call", call_id: "orphan", name: "shell", arguments: "{}" },
+    say("user", "never mind, do this instead"),
+    think("r2"),
+    { type: "function_call", call_id: "c2", name: "shell", arguments: "{}" },
+    { type: "function_call_output", call_id: "c2", output: "ok" },
+    say("user", "u3"),
+  ];
+
+  const body = buildDeepSeekBody({ model: "deepseek/deepseek-v4-flash", input });
+  assert.deepEqual(shape(body.input), shape(input));
+});
+
+test("gives each parallel tool call its own reasoning without leaking it into later turns", () => {
+  const parallel = buildDeepSeekBody({
+    model: "deepseek/deepseek-v4-flash",
+    input: [
+      say("user", "u1"),
+      think("r1"),
+      { type: "function_call", call_id: "c1", name: "shell", arguments: "{}" },
+      { type: "function_call", call_id: "c2", name: "shell", arguments: "{}" },
+      { type: "function_call_output", call_id: "c1", output: "a" },
+      { type: "function_call_output", call_id: "c2", output: "b" },
+    ],
+  });
+  assert.deepEqual(shape(parallel.input), [
+    "user:u1",
+    "reasoning:r1",
+    "function_call:c1",
+    "function_call_output:c1",
+    "reasoning:r1",
+    "function_call:c2",
+    "function_call_output:c2",
+  ]);
+  assert.notEqual(parallel.input[1], parallel.input[4]);
+
+  // A second turn that carries no reasoning of its own must not inherit the first turn's.
+  const sequential = buildDeepSeekBody({
+    model: "deepseek/deepseek-v4-flash",
+    input: [
+      say("user", "u1"),
+      think("r1"),
+      { type: "function_call", call_id: "c1", name: "shell", arguments: "{}" },
+      { type: "function_call_output", call_id: "c1", output: "a" },
+      { type: "function_call", call_id: "c2", name: "shell", arguments: "{}" },
+      { type: "function_call_output", call_id: "c2", output: "b" },
+    ],
+  });
+  assert.equal(sequential.input.filter((item) => item.type === "reasoning").length, 1);
+});
+
+test("never asks DeepSeek for parallel tool calls", () => {
+  const body = buildDeepSeekBody({
+    model: "deepseek/deepseek-v4-flash",
+    parallel_tool_calls: true,
+    input: [say("user", "u1")],
+  });
+  assert.equal(body.parallel_tool_calls, false);
 });

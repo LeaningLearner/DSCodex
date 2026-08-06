@@ -57,7 +57,10 @@ export function buildDeepSeekCatalogEntry(template) {
   // rewrites those images into GPT-generated descriptions before DeepSeek sees them.
   entry.input_modalities = ["text", "image"];
   entry.supports_image_detail_original = false;
-  entry.supports_parallel_tool_calls = true;
+  // DeepSeek's Responses API rejects a turn that replays more than one tool call
+  // ("The reasoning_text in the thinking mode must be passed back to the API."),
+  // which wedges every later request in the session. Never ask for parallel calls.
+  entry.supports_parallel_tool_calls = false;
   entry.supports_search_tool = true;
   entry.tool_mode = null;
   entry.multi_agent_version = "v2";
