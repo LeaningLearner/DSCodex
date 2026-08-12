@@ -46,16 +46,25 @@ child.stdout.on("data", (chunk) => {
         message.result?.data?.some((item) => item.model === "gpt-5.6-sol"),
         "native GPT catalog entries were not preserved",
       );
-      const model = message.result?.data?.find((item) => item.model === "deepseek/deepseek-v4-flash");
-      assert.ok(model, "V4 Flash is absent from Codex model/list");
-      assert.equal(model.displayName, "🐳 V4 Flash");
-      assert.equal(model.defaultReasoningEffort, "max");
-      assert.deepEqual(model.supportedReasoningEfforts.map((item) => item.reasoningEffort), ["high", "max"]);
+      const expected = [
+        ["deepseek/deepseek-v4-flash", "🐳 V4 Flash"],
+        ["deepseek/deepseek-v4-pro", "🐳 V4 Pro"],
+      ];
+      const models = expected.map(([slug, displayName]) => {
+        const model = message.result?.data?.find((item) => item.model === slug);
+        assert.ok(model, `${displayName} is absent from Codex model/list`);
+        assert.equal(model.displayName, displayName);
+        assert.equal(model.defaultReasoningEffort, "max");
+        assert.deepEqual(model.supportedReasoningEfforts.map((item) => item.reasoningEffort), ["high", "max"]);
+        return model;
+      });
       console.log(JSON.stringify({
-        model: model.model,
-        displayName: model.displayName,
-        defaultReasoningEffort: model.defaultReasoningEffort,
-        supportedReasoningEfforts: model.supportedReasoningEfforts.map((item) => item.reasoningEffort),
+        models: models.map((model) => ({
+          model: model.model,
+          displayName: model.displayName,
+          defaultReasoningEffort: model.defaultReasoningEffort,
+          supportedReasoningEfforts: model.supportedReasoningEfforts.map((item) => item.reasoningEffort),
+        })),
         nativeGptPreserved: true,
       }));
       clearTimeout(timer);

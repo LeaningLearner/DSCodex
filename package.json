@@ -1,9 +1,9 @@
 {
   "name": "dscodex",
-  "version": "0.6.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Minimal DeepSeek V4 Flash Responses API integration for Codex",
+  "description": "Minimal DeepSeek V4 Flash and Pro Responses API integration for Codex",
   "bin": {
     "dscodex": "./src/cli.mjs"
   },

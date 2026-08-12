@@ -68,7 +68,7 @@ function systemdQuote(value) {
 // SIGTERM, so only crashes are restarted.
 export function buildSystemdUnit({ nodePath, cliPath, port, logPath }) {
   return `[Unit]
-Description=DSCodex loopback router (DeepSeek V4 Flash for Codex)
+Description=DSCodex loopback router (DeepSeek V4 Flash and Pro for Codex)
 
 [Service]
 ExecStart=${systemdQuote(nodePath)} ${systemdQuote(cliPath)} serve --port ${port}

@@ -29,14 +29,14 @@ async function bodyOf(request) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-test("routes V4 Flash to native DeepSeek /responses and preserves SSE", async (t) => {
-  let observed;
+test("routes V4 Flash and Pro to their native DeepSeek Responses models", async (t) => {
+  const observed = [];
   const upstream = http.createServer(async (request, response) => {
-    observed = {
+    observed.push({
       path: request.url,
       authorization: request.headers.authorization,
       body: JSON.parse(await bodyOf(request)),
-    };
+    });
     const stream = "event: response.output_text.delta\ndata: {\"delta\":\"ok\"}\n\n"
       + "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n";
     const compressed = gzipSync(stream);
@@ -58,34 +58,40 @@ test("routes V4 Flash to native DeepSeek /responses and preserves SSE", async (t
   const proxyUrl = await listen(proxy);
   t.after(async () => { await close(proxy); await close(upstream); });
 
-  const codexBody = zstdCompressSync(JSON.stringify({
-    model: "deepseek/deepseek-v4-flash",
+  for (const [pickerModel, wireModel] of [
+    ["deepseek/deepseek-v4-flash", "deepseek-v4-flash"],
+    ["deepseek/deepseek-v4-pro", "deepseek-v4-pro"],
+  ]) {
+    const codexBody = zstdCompressSync(JSON.stringify({
+      model: pickerModel,
       stream: true,
       metadata: { unsupported: true },
-    previous_response_id: "unsupported",
-    input: [
-      { id: "msg_1", type: "agent_message", content: "prior answer" },
-      { id: "call_1", type: "function_call_output", call_id: "call_7", output: "done" },
-    ],
-  }));
-  const response = await fetch(route(proxyUrl), {
-    method: "POST",
-    headers: { "content-type": "application/json", "content-encoding": "zstd", authorization: "Bearer client-token" },
-    body: codexBody,
-  });
+      previous_response_id: "unsupported",
+      input: [
+        { id: "msg_1", type: "agent_message", content: "prior answer" },
+        { id: "call_1", type: "function_call_output", call_id: "call_7", output: "done" },
+      ],
+    }));
+    const response = await fetch(route(proxyUrl), {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-encoding": "zstd", authorization: "Bearer client-token" },
+      body: codexBody,
+    });
 
-  assert.equal(response.status, 200);
-  assert.equal(response.headers.get("content-encoding"), null);
-  assert.match(await response.text(), /response\.completed/);
-  assert.equal(observed.path, "/responses");
-  assert.equal(observed.authorization, "Bearer test-key");
-  assert.equal(observed.body.model, "deepseek-v4-flash");
-  assert.deepEqual(observed.body.reasoning, { effort: "max" });
-  assert.equal(observed.body.store, false);
-  assert.equal("previous_response_id" in observed.body, false);
-  assert.equal("metadata" in observed.body, false);
-  assert.deepEqual(observed.body.input[0], { type: "message", role: "assistant", content: "prior answer" });
-  assert.deepEqual(observed.body.input[1], { type: "function_call_output", call_id: "call_7", output: "done" });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-encoding"), null);
+    assert.match(await response.text(), /response\.completed/);
+    const request = observed.at(-1);
+    assert.equal(request.path, "/responses");
+    assert.equal(request.authorization, "Bearer test-key");
+    assert.equal(request.body.model, wireModel);
+    assert.deepEqual(request.body.reasoning, { effort: "max" });
+    assert.equal(request.body.store, false);
+    assert.equal("previous_response_id" in request.body, false);
+    assert.equal("metadata" in request.body, false);
+    assert.deepEqual(request.body.input[0], { type: "message", role: "assistant", content: "prior answer" });
+    assert.deepEqual(request.body.input[1], { type: "function_call_output", call_id: "call_7", output: "done" });
+  }
 });
 
 test("adapts Codex remote compaction v2 to a DeepSeek summary and restores it on replay", async (t) => {
@@ -131,7 +137,7 @@ test("adapts Codex remote compaction v2 to a DeepSeek summary and restores it on
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model: "deepseek/deepseek-v4-flash",
+      model: "deepseek/deepseek-v4-pro",
       stream: true,
       tools: [{ type: "function", name: "shell" }],
       parallel_tool_calls: true,
@@ -148,19 +154,22 @@ test("adapts Codex remote compaction v2 to a DeepSeek summary and restores it on
     .filter((line) => line.startsWith("data:"))
     .map((line) => JSON.parse(line.slice(5).trim()));
   const compactItem = events.find((event) => event.type === "response.output_item.done")?.item;
+  const completed = events.find((event) => event.type === "response.completed")?.response;
   assert.equal(compactItem?.type, "compaction");
+  assert.equal(completed?.model, "deepseek-v4-pro");
   assert.match(compactItem.encrypted_content, /^dscodex-compaction-v1:/);
   assert.equal(compactItem.encrypted_content.includes(summary), false);
   assert.equal(observed[0].input.some((item) => item.type === "compaction_trigger"), false);
   assert.equal("tools" in observed[0], false);
   assert.equal("parallel_tool_calls" in observed[0], false);
+  assert.equal(observed[0].model, "deepseek-v4-pro");
   assert.match(observed[0].input.at(-1).content[0].text, /compact handoff summary/i);
 
   const replayResponse = await fetch(route(proxyUrl), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model: "deepseek/deepseek-v4-flash",
+      model: "deepseek/deepseek-v4-pro",
       input: [
         compactItem,
         { type: "message", role: "user", content: [{ type: "input_text", text: "Continue" }] },
@@ -364,17 +373,19 @@ test("shutdown requires the per-instance token", async (t) => {
   assert.equal(shutdownCalls, 1);
 });
 
-test("returns an explicit error when V4 Flash is selected without a key", async (t) => {
+test("returns an explicit error when a DeepSeek model is selected without a key", async (t) => {
   const proxy = createProxyServer({ deepSeekKey: "", logger: { info() {}, error() {} }, routerToken: ROUTER_TOKEN });
   const proxyUrl = await listen(proxy);
   t.after(async () => { await close(proxy); });
-  const response = await fetch(route(proxyUrl), {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: "Bearer client-token" },
-    body: JSON.stringify({ model: "deepseek/deepseek-v4-flash" }),
-  });
-  assert.equal(response.status, 503);
-  assert.match((await response.json()).error.message, /DEEPSEEK_API_KEY/);
+  for (const model of ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"]) {
+    const response = await fetch(route(proxyUrl), {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer client-token" },
+      body: JSON.stringify({ model }),
+    });
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).error.message, /DEEPSEEK_API_KEY/);
+  }
 });
 
 test("rejects requests without the router token, while OAuth remains optional", async (t) => {

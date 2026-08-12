@@ -768,7 +768,7 @@ function usage() {
 
 Usage: dscodex <command> [--port ${DEFAULT_PORT}]
 
-  install     merge 🐳 V4 Flash into the Codex model catalog
+  install     merge 🐳 V4 Flash and 🐳 V4 Pro into the Codex model catalog
   sync        refresh native GPT entries in the merged catalog
   key set     store the DeepSeek API key (hidden prompt, or DEEPSEEK_API_KEY env)
   key status  show where the DeepSeek key comes from
@@ -808,7 +808,11 @@ async function main() {
       // a previous DSCodex version installed globally; model switching works
       // through the catalog either way.
       deactivateBridge(paths);
-      console.log(`Installed ${result.catalog.models[0].display_name} with default Max reasoning`);
+      const installedDeepSeek = result.catalog.models
+        .filter((model) => model.slug?.startsWith("deepseek/"))
+        .map((model) => model.display_name)
+        .join(" and ");
+      console.log(`Installed ${installedDeepSeek} with default Max reasoning`);
       console.log(`Fully quit and restart Codex after starting DSCodex on ${HOST}:${port}`);
       console.log("Optional: `node src/cli.mjs autostart enable` starts the router at login");
       console.log("Optional: `node src/cli.mjs bridge enable` restores provider-specific effort memory in the ChatGPT app");

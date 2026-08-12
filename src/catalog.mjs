@@ -1,5 +1,5 @@
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
-import { DEEPSEEK_PICKER_SLUG } from "./constants.mjs";
+import { DEEPSEEK_MODELS } from "./constants.mjs";
 
 const HIGH = {
   effort: "high",
@@ -31,18 +31,18 @@ function backfillNativeEntry(model) {
   return entry;
 }
 
-function replaceIdentity(value) {
+function replaceIdentity(value, productName) {
   if (typeof value !== "string") return value;
   return value
-    .replaceAll("You are Codex, an agent based on GPT-5.", "You are Codex, powered by DeepSeek V4 Flash.")
-    .replaceAll("You are Codex, based on GPT-5.", "You are Codex, powered by DeepSeek V4 Flash.");
+    .replaceAll("You are Codex, an agent based on GPT-5.", `You are Codex, powered by ${productName}.`)
+    .replaceAll("You are Codex, based on GPT-5.", `You are Codex, powered by ${productName}.`);
 }
 
-export function buildDeepSeekCatalogEntry(template) {
+export function buildDeepSeekCatalogEntry(template, model = DEEPSEEK_MODELS[0]) {
   const entry = clone(template);
-  entry.slug = DEEPSEEK_PICKER_SLUG;
-  entry.display_name = "🐳 V4 Flash";
-  entry.description = "DeepSeek V4 Flash via the native Responses API.";
+  entry.slug = model.pickerSlug;
+  entry.display_name = model.displayName;
+  entry.description = `${model.productName} via the native Responses API.`;
   entry.default_reasoning_level = "max";
   entry.supported_reasoning_levels = [HIGH, MAX];
   entry.priority = 0;
@@ -76,9 +76,12 @@ export function buildDeepSeekCatalogEntry(template) {
   entry.availability_nux = null;
   entry.upgrade = null;
   entry.experimental_supported_tools = [];
-  entry.base_instructions = replaceIdentity(entry.base_instructions);
+  entry.base_instructions = replaceIdentity(entry.base_instructions, model.productName);
   if (entry.model_messages?.instructions_template) {
-    entry.model_messages.instructions_template = replaceIdentity(entry.model_messages.instructions_template);
+    entry.model_messages.instructions_template = replaceIdentity(
+      entry.model_messages.instructions_template,
+      model.productName,
+    );
   }
 
   delete entry.additional_speed_tiers;
@@ -91,10 +94,14 @@ export function buildCatalog(cache) {
   if (!Array.isArray(cache?.models) || cache.models.length === 0) {
     throw new Error("Codex models_cache.json has no model templates; open Codex once, then retry");
   }
-  const nativeModels = cache.models.filter((model) => model?.slug !== DEEPSEEK_PICKER_SLUG);
+  const deepSeekSlugs = new Set(DEEPSEEK_MODELS.map((model) => model.pickerSlug));
+  const nativeModels = cache.models.filter((model) => !deepSeekSlugs.has(model?.slug));
   const template = nativeModels.find((model) => model?.slug === "gpt-5.6-sol") ?? nativeModels[0];
   return {
-    models: [buildDeepSeekCatalogEntry(template), ...nativeModels.map(backfillNativeEntry)],
+    models: [
+      ...DEEPSEEK_MODELS.map((model) => buildDeepSeekCatalogEntry(template, model)),
+      ...nativeModels.map(backfillNativeEntry),
+    ],
   };
 }
 

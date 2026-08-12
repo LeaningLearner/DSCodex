@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { DEEPSEEK_PICKER_SLUG, DEEPSEEK_WIRE_MODEL } from "./constants.mjs";
+import { deepSeekModelFor } from "./constants.mjs";
 
 const VERSION = 1;
 const STANDARD_TIER = "default";
@@ -8,7 +8,7 @@ const MAX_TRACKED_THREADS = 500;
 const VALID_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
 
 function providerFor(model) {
-  return model === DEEPSEEK_PICKER_SLUG || model === DEEPSEEK_WIRE_MODEL ? "deepseek" : "openai";
+  return deepSeekModelFor(model) ? "deepseek" : "openai";
 }
 
 function normalizeEffort(provider, effort) {
@@ -57,7 +57,7 @@ function loadState(statePath, configPath) {
   try {
     const value = JSON.parse(readFileSync(statePath, "utf8"));
     if (value?.version !== VERSION) return initialState(configPath);
-    return {
+    const state = {
       version: VERSION,
       activeProvider: value.activeProvider === "deepseek" ? "deepseek" : "openai",
       openai: {
@@ -72,9 +72,29 @@ function loadState(statePath, configPath) {
       staleEffort: value.staleEffort === true,
       threads: value.threads && typeof value.threads === "object" ? value.threads : {},
     };
+    reconcileWithConfig(state, configPath);
+    return state;
   } catch {
     return initialState(configPath);
   }
+}
+
+// The GUI keeps changing models while the bridge is off, and config.toml is
+// the live picker truth. Without this, a state file saved before a shutdown
+// misclassifies the next cross-provider switch as an in-provider effort change
+// and adopts the carried effort into the wrong family's slot (e.g. switching
+// back to GPT while `activeProvider` still says DeepSeek restores DeepSeek's
+// Max instead of the saved OpenAI effort).
+function reconcileWithConfig(state, configPath) {
+  const config = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
+  const configProvider = providerFor(rootString(config, "model") ?? "");
+  if (!configProvider || configProvider === state.activeProvider) return;
+  state.activeProvider = configProvider;
+  state.staleEffort = false;
+  const effort = normalizeEffort(configProvider, rootString(config, "model_reasoning_effort"));
+  if (effort) state[configProvider].reasoningEffort = effort;
+  const tier = rootString(config, "service_tier");
+  if (tier) state.openai.serviceTier = tier;
 }
 
 function reviveThreads(value) {

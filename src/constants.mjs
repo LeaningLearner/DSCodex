@@ -1,14 +1,32 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export const VERSION = "0.6.0";
+export const VERSION = "1.0.0";
 export const DEFAULT_PORT = 10110;
 export const HOST = "127.0.0.1";
-export const DEEPSEEK_PICKER_SLUG = "deepseek/deepseek-v4-flash";
-export const DEEPSEEK_WIRE_MODEL = "deepseek-v4-flash";
+export const DEEPSEEK_MODELS = Object.freeze([
+  Object.freeze({
+    pickerSlug: "deepseek/deepseek-v4-flash",
+    wireModel: "deepseek-v4-flash",
+    displayName: "🐳 V4 Flash",
+    productName: "DeepSeek V4 Flash",
+  }),
+  Object.freeze({
+    pickerSlug: "deepseek/deepseek-v4-pro",
+    wireModel: "deepseek-v4-pro",
+    displayName: "🐳 V4 Pro",
+    productName: "DeepSeek V4 Pro",
+  }),
+]);
 export const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 export const CHATGPT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
 export const MANAGED_MARKER = "# DSCodex managed; remove with `dscodex uninstall`";
+
+export function deepSeekModelFor(model) {
+  return DEEPSEEK_MODELS.find((candidate) => (
+    model === candidate.pickerSlug || model === candidate.wireModel
+  )) ?? null;
+}
 
 export function resolveCodexHome(env = process.env) {
   return env.CODEX_HOME?.trim() || join(homedir(), ".codex");

@@ -21,7 +21,7 @@ test("rewrites default picker transitions with independent provider slots", () =
     method: "config/batchWrite",
     params: {
       edits: [
-        { keyPath: "model", value: "deepseek/deepseek-v4-flash", mergeStrategy: "upsert" },
+        { keyPath: "model", value: "deepseek/deepseek-v4-pro", mergeStrategy: "upsert" },
         { keyPath: "model_reasoning_effort", value: "xhigh", mergeStrategy: "upsert" },
       ],
     },
@@ -128,6 +128,13 @@ test("persists slots across app-server bridge restarts", () => {
     params: { edits: [{ keyPath: "model_reasoning_effort", value: "high", mergeStrategy: "upsert" }] },
   });
 
+  // The real app-server applies the rewritten edits to config.toml; mirror that
+  // before the next bridge instance reads the file.
+  writeFileSync(
+    paths.configPath,
+    'model = "deepseek/deepseek-v4-flash"\nmodel_reasoning_effort = "high"\nservice_tier = "priority"\n',
+  );
+
   const second = createAppServerState(paths);
   const toOpenAi = {
     id: 3,
@@ -139,6 +146,44 @@ test("persists slots across app-server bridge restarts", () => {
   };
   second.rewriteClient(toOpenAi);
   assert.equal(toOpenAi.params.edits[1].value, "xhigh");
+});
+
+test("reconciles a stale active provider with the live config model on restart", () => {
+  const paths = fixture();
+  const first = createAppServerState(paths);
+  first.rewriteClient({
+    id: 1,
+    method: "config/batchWrite",
+    params: { edits: [
+      { keyPath: "model", value: "gpt-5.6-sol", mergeStrategy: "upsert" },
+      { keyPath: "model_reasoning_effort", value: "low", mergeStrategy: "upsert" },
+    ] },
+  });
+
+  // The bridge was off while the user switched to DeepSeek; the state file
+  // still remembers OpenAI, but config.toml is the live picker truth.
+  writeFileSync(
+    paths.configPath,
+    'model = "deepseek/deepseek-v4-pro"\nmodel_reasoning_effort = "max"\nservice_tier = "priority"\n',
+  );
+
+  const second = createAppServerState(paths);
+  const toOpenAi = {
+    id: 2,
+    method: "config/batchWrite",
+    params: { edits: [
+      { keyPath: "model", value: "gpt-5.6-sol", mergeStrategy: "upsert" },
+      { keyPath: "model_reasoning_effort", value: "max", mergeStrategy: "upsert" },
+    ] },
+  };
+  second.rewriteClient(toOpenAi);
+  assert.equal(toOpenAi.params.edits[1].value, "low");
+
+  const persisted = JSON.parse(readFileSync(paths.statePath, "utf8"));
+  assert.equal(persisted.activeProvider, "openai");
+  assert.equal(persisted.openai.reasoningEffort, "low");
+  assert.equal(persisted.openai.serviceTier, "priority");
+  assert.equal(persisted.deepseek.reasoningEffort, "max");
 });
 
 test("learns the saved provider effort when an existing thread resumes", () => {

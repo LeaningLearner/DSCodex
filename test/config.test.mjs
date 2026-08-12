@@ -14,7 +14,7 @@ import {
   stripManagedConfig,
   uninstall,
 } from "../src/config.mjs";
-import { pathsFor } from "../src/constants.mjs";
+import { pathsFor, VERSION } from "../src/constants.mjs";
 import { readRouterToken, readStoredKey } from "../src/keys.mjs";
 
 const TEMPLATE = {
@@ -33,6 +33,11 @@ const TEMPLATE = {
 
 const ROUTER_TOKEN = "A".repeat(43);
 
+test("runtime version matches package metadata", () => {
+  const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(VERSION, packageJson.version);
+});
+
 test("catalog backfills newly required fields on stale native cache entries", () => {
   const catalog = buildCatalog({ models: [TEMPLATE] });
   const native = catalog.models.find((model) => model.slug === "gpt-5.6-sol");
@@ -41,16 +46,22 @@ test("catalog backfills newly required fields on stale native cache entries", ()
   assert.equal(deepseek.supports_reasoning_summaries, false);
 });
 
-test("catalog adds one whale-labelled V4 Flash entry with honest reasoning levels", () => {
+test("catalog adds distinct whale-labelled V4 Flash and Pro entries", () => {
   const catalog = buildCatalog({ models: [TEMPLATE] });
-  const model = catalog.models[0];
-  assert.equal(model.slug, "deepseek/deepseek-v4-flash");
-  assert.equal(model.display_name, "🐳 V4 Flash");
-  assert.equal(model.default_reasoning_level, "max");
-  assert.deepEqual(model.supported_reasoning_levels.map(({ effort }) => effort), ["high", "max"]);
-  assert.equal(model.base_instructions, "You are Codex, powered by DeepSeek V4 Flash.");
-  assert.deepEqual(model.input_modalities, ["text", "image"]);
-  assert.equal(model.prefer_websockets, false);
+  const expected = [
+    ["deepseek/deepseek-v4-flash", "🐳 V4 Flash", "DeepSeek V4 Flash"],
+    ["deepseek/deepseek-v4-pro", "🐳 V4 Pro", "DeepSeek V4 Pro"],
+  ];
+  for (const [slug, displayName, productName] of expected) {
+    const model = catalog.models.find((candidate) => candidate.slug === slug);
+    assert.ok(model);
+    assert.equal(model.display_name, displayName);
+    assert.equal(model.default_reasoning_level, "max");
+    assert.deepEqual(model.supported_reasoning_levels.map(({ effort }) => effort), ["high", "max"]);
+    assert.equal(model.base_instructions, `You are Codex, powered by ${productName}.`);
+    assert.deepEqual(model.input_modalities, ["text", "image"]);
+    assert.equal(model.prefer_websockets, false);
+  }
 });
 
 test("config injection is root-correct, reversible, and preserves user config", () => {
@@ -141,7 +152,7 @@ test("install and uninstall touch only DSCodex-owned files and lines", () => {
   writeFileSync(paths.cache, JSON.stringify({ models: [TEMPLATE] }));
 
   const result = install({ paths, port: 10110 });
-  assert.equal(result.catalog.models.length, 2);
+  assert.equal(result.catalog.models.length, 3);
   assert.match(result.routerToken, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(readRouterToken(paths.keyFile), result.routerToken);
   assert.match(readFileSync(paths.config, "utf8"), new RegExp(`127\\.0\\.0\\.1:10110/${result.routerToken}/v1`));
