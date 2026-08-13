@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import http from "node:http";
+import net from "node:net";
 import test from "node:test";
 import { once } from "node:events";
 import { gzipSync, zstdCompressSync } from "node:zlib";
@@ -545,4 +546,32 @@ test("never asks DeepSeek for parallel tool calls", () => {
     input: [say("user", "u1")],
   });
   assert.equal(body.parallel_tool_calls, false);
+});
+
+// Regression: the `upgrade` handler used to leave its detached socket without an
+// error listener, so a client reset raised an unhandled 'error' event and took
+// the whole router down — Codex then sat in "reconnecting" until a manual start.
+test("survives a client reset on an upgrade attempt", async (t) => {
+  const proxy = createProxyServer({
+    deepSeekKey: "test-key",
+    logger: { info() {}, error() {} },
+    routerToken: ROUTER_TOKEN,
+  });
+  const proxyUrl = await listen(proxy);
+  t.after(async () => { await close(proxy); });
+  const { port } = proxy.address();
+
+  const socket = net.connect(port, "127.0.0.1");
+  await once(socket, "connect");
+  socket.write(
+    "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+    + "Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  socket.resetAndDestroy();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  // Still serving: an unhandled 'error' event would have killed this process.
+  const response = await fetch(route(proxyUrl, "/v1/models"));
+  assert.equal(response.status, 200);
 });

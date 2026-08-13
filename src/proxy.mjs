@@ -587,6 +587,10 @@ export function createProxyServer({
   server.keepAliveTimeout = 120_000;
   server.headersTimeout = 125_000;
   server.on("upgrade", (_request, socket) => {
+    // Handling `upgrade` detaches the socket from the server's own error
+    // handling, so an ECONNRESET here raised an unhandled 'error' event and
+    // killed the whole router — Codex then sat in "reconnecting" forever.
+    socket.on("error", () => {});
     socket.end("HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\n\r\n");
   });
   return server;
