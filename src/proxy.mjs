@@ -15,7 +15,7 @@ import {
 } from "./constants.mjs";
 import { createVisionDescriber } from "./vision.mjs";
 
-const FORWARDED_REQUEST_HEADERS = new Set([
+const CHATGPT_FORWARDED_REQUEST_HEADERS = new Set([
   "authorization",
   "chatgpt-account-id",
   "openai-beta",
@@ -24,6 +24,7 @@ const FORWARDED_REQUEST_HEADERS = new Set([
   "session-id",
   "thread-id",
   "user-agent",
+  "version",
   "x-client-request-id",
   "x-codex-beta-features",
   "x-codex-installation-id",
@@ -32,9 +33,15 @@ const FORWARDED_REQUEST_HEADERS = new Set([
   "x-codex-turn-state",
   "x-codex-window-id",
   "x-oai-attestation",
+  "x-openai-fedramp",
+  "x-openai-internal-codex-residency",
+  "x-openai-internal-codex-responses-lite",
+  "x-openai-memgen-request",
   "x-openai-subagent",
   "x-responsesapi-include-timing-metrics",
 ]);
+
+const DEEPSEEK_FORWARDED_REQUEST_HEADERS = new Set(["user-agent"]);
 
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -395,8 +402,11 @@ function authorizedPath(pathname, routerToken) {
 
 function copyRequestHeaders(request, deepSeekKey) {
   const headers = new Headers();
+  const forwarded = deepSeekKey
+    ? DEEPSEEK_FORWARDED_REQUEST_HEADERS
+    : CHATGPT_FORWARDED_REQUEST_HEADERS;
   for (const [name, value] of Object.entries(request.headers)) {
-    if (!FORWARDED_REQUEST_HEADERS.has(name) || value === undefined) continue;
+    if (!forwarded.has(name) || value === undefined) continue;
     headers.set(name, Array.isArray(value) ? value.join(", ") : value);
   }
   headers.set("content-type", "application/json");

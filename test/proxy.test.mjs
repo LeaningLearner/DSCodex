@@ -279,6 +279,11 @@ test("forwards native GPT models to ChatGPT Codex with OAuth headers", async (t)
       path: request.url,
       authorization: request.headers.authorization,
       account: request.headers["chatgpt-account-id"],
+      fedramp: request.headers["x-openai-fedramp"],
+      memgen: request.headers["x-openai-memgen-request"],
+      residency: request.headers["x-openai-internal-codex-residency"],
+      responsesLite: request.headers["x-openai-internal-codex-responses-lite"],
+      version: request.headers.version,
       body: JSON.parse(await bodyOf(request)),
     };
     response.writeHead(200, { "content-type": "application/json" });
@@ -300,6 +305,11 @@ test("forwards native GPT models to ChatGPT Codex with OAuth headers", async (t)
       "content-type": "application/json",
       authorization: "Bearer oauth-token",
       "chatgpt-account-id": "acct-test",
+      "x-openai-fedramp": "true",
+      "x-openai-memgen-request": "true",
+      "x-openai-internal-codex-residency": "us",
+      "x-openai-internal-codex-responses-lite": "true",
+      version: "0.test",
     },
     body: JSON.stringify(original),
   });
@@ -307,7 +317,95 @@ test("forwards native GPT models to ChatGPT Codex with OAuth headers", async (t)
   assert.equal(observed.path, "/backend-api/codex/responses");
   assert.equal(observed.authorization, "Bearer oauth-token");
   assert.equal(observed.account, "acct-test");
+  assert.equal(observed.fedramp, "true");
+  assert.equal(observed.memgen, "true");
+  assert.equal(observed.residency, "us");
+  assert.equal(observed.responsesLite, "true");
+  assert.equal(observed.version, "0.test");
   assert.deepEqual(observed.body, original);
+});
+
+test("forwards Responses Lite to the remote compaction endpoint", async (t) => {
+  let observed;
+  const upstream = http.createServer(async (request, response) => {
+    observed = {
+      path: request.url,
+      responsesLite: request.headers["x-openai-internal-codex-responses-lite"],
+      body: JSON.parse(await bodyOf(request)),
+    };
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end('{"output":[{"type":"compaction_summary","encrypted_content":"opaque"}]}');
+  });
+  const upstreamUrl = await listen(upstream);
+  const proxy = createProxyServer({
+    chatGptBaseUrl: `${upstreamUrl}/backend-api/codex`,
+    logger: { info() {}, error() {} },
+    routerToken: ROUTER_TOKEN,
+  });
+  const proxyUrl = await listen(proxy);
+  t.after(async () => { await close(proxy); await close(upstream); });
+
+  const original = { model: "gpt-5.6-sol", input: [{ role: "user", content: "compact me" }] };
+  const response = await fetch(route(proxyUrl, "/v1/responses/compact"), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-openai-internal-codex-responses-lite": "true",
+    },
+    body: JSON.stringify(original),
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(observed.path, "/backend-api/codex/responses/compact");
+  assert.equal(observed.responsesLite, "true");
+  assert.deepEqual(observed.body, original);
+  assert.deepEqual(await response.json(), {
+    output: [{ type: "compaction_summary", encrypted_content: "opaque" }],
+  });
+});
+
+test("does not forward ChatGPT authentication metadata to DeepSeek", async (t) => {
+  let observed;
+  const upstream = http.createServer(async (request, response) => {
+    observed = { ...request.headers };
+    await bodyOf(request);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("{}");
+  });
+  const upstreamUrl = await listen(upstream);
+  const proxy = createProxyServer({
+    deepSeekKey: "deepseek-test-key",
+    deepSeekBaseUrl: upstreamUrl,
+    logger: { info() {}, error() {} },
+    routerToken: ROUTER_TOKEN,
+  });
+  const proxyUrl = await listen(proxy);
+  t.after(async () => { await close(proxy); await close(upstream); });
+
+  const response = await fetch(route(proxyUrl), {
+    method: "POST",
+    headers: {
+      authorization: "Bearer oauth-token",
+      "chatgpt-account-id": "acct-test",
+      session_id: "session-underscore-test",
+      "session-id": "session-test",
+      "thread-id": "thread-test",
+      "user-agent": "codex-test",
+      "x-oai-attestation": "attestation-test",
+      "x-codex-turn-metadata": "metadata-test",
+    },
+    body: JSON.stringify({ model: "deepseek/deepseek-v4-flash", input: "hello" }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(observed.authorization, "Bearer deepseek-test-key");
+  assert.equal(observed["user-agent"], "codex-test");
+  assert.equal(observed["chatgpt-account-id"], undefined);
+  assert.equal(observed.session_id, undefined);
+  assert.equal(observed["session-id"], undefined);
+  assert.equal(observed["thread-id"], undefined);
+  assert.equal(observed["x-oai-attestation"], undefined);
+  assert.equal(observed["x-codex-turn-metadata"], undefined);
 });
 
 test("keeps pooled loopback connections alive past the Codex client idle timeout", async (t) => {
