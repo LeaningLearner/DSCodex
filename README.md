@@ -1,4 +1,4 @@
-# DSCodex
+# DSCodex — 在 Codex / ChatGPT 桌面端同时使用 DeepSeek 与 GPT
 
 <div align="center">
 
@@ -24,6 +24,21 @@
 简体中文 · [English](README.en.md)
 
 ---
+
+## DSCodex 是什么？
+
+**DSCodex 是一个开源、本地运行的 Codex 多模型路由器。** 它让 DeepSeek V4 Flash / Pro 出现在 ChatGPT 桌面端的 Codex 原生模型选择器、Codex CLI 和 IDE 扩展中，同时保留 ChatGPT OAuth 登录与 GPT 模型。DeepSeek 请求使用原生 Responses API；GPT 请求继续通过 `chatgpt.com` OAuth 透明转发。
+
+DSCodex 适合想要 **Codex 接入 DeepSeek**、又不想在 DeepSeek API Key 与 ChatGPT 订阅之间反复改配置或重新登录的用户。它不是 ChatGPT 网页版插件，也不 fork、不 patch ChatGPT 或 Codex App。
+
+### 何时选择 DSCodex？
+
+| 需求 | [DeepSeek 官方 Codex 直连](https://api-docs.deepseek.com/zh-cn/quick_start/agent_integrations/codex/) | DSCodex |
+|---|---|---|
+| 在 Codex 使用 V4 Flash / Pro | 支持 | 支持 |
+| 同一客户端保留 GPT OAuth 模型 | 切换到 API Key 登录；恢复配置后切回 | 按模型名路由，DeepSeek 与 GPT 同时留在模型菜单 |
+| DeepSeek API Key | 写入 `config.toml` 的 bearer token 字段 | 独立存储于 `~/.codex/dscodex/config.json`（0600；Windows DPAPI） |
+| Codex 兼容适配 | 直接连接 DeepSeek | 工具重放、上下文压缩、GPT 识图与 provider 状态适配 |
 
 ## 快速开始
 
@@ -95,6 +110,20 @@ http://127.0.0.1:10110/<router-token>/v1   ← DSCodex 本地路由
 | app-server bridge（桌面端模型菜单状态记忆） | 可选，macOS 专属；默认不启以保 Computer Use |
 | chatgpt.com 网页版 | 不支持（接入的是本地 Codex 运行时） |
 
+## 常见问题
+
+### 能在同一个 Codex / ChatGPT 桌面端里同时使用 DeepSeek 和 GPT 吗？
+
+能。模型菜单保留 GPT，并新增 `🐳 V4 Flash` 与 `🐳 V4 Pro`；路由器按模型名选择 DeepSeek API 或 ChatGPT OAuth，不需要为每次切换重写 provider。
+
+### 支持 Codex CLI、IDE 和 Windows 吗？
+
+支持。Codex CLI 与 IDE 扩展支持 macOS、Linux、Windows；ChatGPT 桌面端的原生模型菜单集成当前以 macOS 为主。Windows 桌面端不支持可选的 app-server bridge，但 CLI / IDE 路由不受影响。
+
+### DeepSeek 能使用 shell、apply_patch、web search、图片和上下文压缩吗？
+
+能。工具调用和 web search 走 DeepSeek Responses API；文字模型无法直接看到图片，因此 DSCodex 先用 GPT 生成图片描述；自动或手动压缩由 DSCodex 生成加密的 Codex compaction item。
+
 ## 已知边界
 
 - **用量统计。** Codex 的 Profile 页面只读，无法计入 DeepSeek 用量。
@@ -102,6 +131,7 @@ http://127.0.0.1:10110/<router-token>/v1   ← DSCodex 本地路由
 - **GPT 识图。** 借用请求自带的 OAuth 头，无需额外 key。无 OAuth 时图片原样透传。默认模型 `gpt-5.6-sol`，`DSCODEX_VISION_MODEL` 可换。
 - **Key 存储、代理解析、bridge 细节、平台差异。** 详见 `AGENTS.md`。
 - **Voice / Pets / 插件 / 技能 / MCP。** 均为客户端功能；Voice 由 GPT-Live 驱动，不会路由到 DeepSeek。
+- **DeepSeek → GPT 任务历史。** 同一任务从 DeepSeek 切回 GPT 时，历史中的明文 `reasoning_text` 目前可能导致 GPT 请求返回 400；见 [#17](https://github.com/fish2lab/DSCodex/issues/17)。切回 DeepSeek 或新建 GPT 任务可继续使用。
 
 ## 卸载
 

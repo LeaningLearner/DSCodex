@@ -1,4 +1,4 @@
-# DSCodex
+# DSCodex — Use DeepSeek and GPT side by side in Codex / ChatGPT desktop
 
 <div align="center">
 
@@ -23,6 +23,21 @@
 [简体中文](README.md) · English
 
 ---
+
+## What is DSCodex?
+
+**DSCodex is an open-source, local multi-model router for Codex.** It adds DeepSeek V4 Flash and Pro to the native model picker in ChatGPT desktop's Codex experience, Codex CLI, and the IDE extension while preserving ChatGPT OAuth and GPT models. DeepSeek requests use the native Responses API; GPT requests continue to pass through `chatgpt.com` with OAuth.
+
+Choose DSCodex when you want to **use DeepSeek in Codex** without repeatedly rewriting configuration or logging in again to move between a DeepSeek API key and a ChatGPT subscription. It is not a plugin for the `chatgpt.com` web app, and it does not fork or patch ChatGPT or Codex.
+
+### When should I choose DSCodex?
+
+| Requirement | [Official DeepSeek direct setup](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/) | DSCodex |
+|---|---|---|
+| Use V4 Flash / Pro in Codex | Supported | Supported |
+| Keep GPT OAuth models in the same client | Switches to API-key login; restore the configuration to switch back | Routes by model name; DeepSeek and GPT stay in the model menu |
+| DeepSeek API key | Bearer-token field in `config.toml` | Separate `~/.codex/dscodex/config.json` storage (0600; Windows DPAPI) |
+| Codex compatibility adaptations | Direct connection to DeepSeek | Tool replay, context compaction, GPT vision, and provider-state adaptations |
 
 ## Quick start
 
@@ -94,6 +109,20 @@ Traffic is split by model name. Only DeepSeek-bound requests are rewritten; GPT 
 | app-server bridge (picker state memory for the desktop app) | Optional, macOS-only; off by default to preserve Computer Use |
 | chatgpt.com web app | Not supported (DSCodex hooks into the local Codex runtime) |
 
+## Frequently asked questions
+
+### Can I use DeepSeek and GPT in the same Codex / ChatGPT desktop app?
+
+Yes. The model menu keeps GPT and adds `🐳 V4 Flash` and `🐳 V4 Pro`. The router selects the DeepSeek API or ChatGPT OAuth by model name, so switching models does not require rewriting the provider configuration.
+
+### Does it support Codex CLI, IDE extensions, and Windows?
+
+Yes. Codex CLI and IDE extensions are supported on macOS, Linux, and Windows; native model-picker integration in ChatGPT desktop currently targets macOS. Windows desktop cannot use the optional app-server bridge, but CLI and IDE routing are unaffected.
+
+### Can DeepSeek use shell, apply_patch, web search, images, and context compaction?
+
+Yes. Tool calls and web search use DeepSeek's Responses API. Because the text-only models cannot see images directly, DSCodex first asks GPT for an image description. Automatic and manual compaction produce an encrypted Codex compaction item.
+
 ## Known edge cases
 
 - **Usage stats.** The Codex app's Profile page is read-only — DeepSeek usage cannot be added.
@@ -101,6 +130,7 @@ Traffic is split by model name. Only DeepSeek-bound requests are rewritten; GPT 
 - **GPT vision.** Borrows the request's ChatGPT OAuth headers (no extra key). Without OAuth headers images pass through untouched. Default model `gpt-5.6-sol`, override with `DSCODEX_VISION_MODEL`.
 - **Key storage, proxy resolution, bridge details, platform differences.** See `AGENTS.md`.
 - **Voice / Pets / plugins / skills / MCP.** All client-side; Voice runs on GPT-Live and is never routed to DeepSeek.
+- **DeepSeek → GPT thread history.** Switching an existing task from DeepSeek back to GPT can currently leave plaintext `reasoning_text` in history and cause a persistent GPT 400 response; see [#17](https://github.com/fish2lab/DSCodex/issues/17). Switching back to DeepSeek or starting a new GPT task remains available.
 
 ## Uninstall
 
